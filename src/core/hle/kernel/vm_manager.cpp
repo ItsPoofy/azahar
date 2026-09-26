@@ -370,7 +370,13 @@ void VMManager::UpdatePageTableForVMA(const VirtualMemoryArea& vma) {
         memory.UnmapRegion(*page_table, vma.base, vma.size);
         break;
     case VMAType::BackingMemory:
-        memory.MapMemoryRegion(*page_table, vma.base, vma.size, vma.backing_memory);
+        if (static_cast<u8>(vma.permissions) & static_cast<u8>(VMAPermission::Execute)) {
+            memory.MapCodeRegion(*page_table, vma.base, vma.size, vma.backing_memory);
+        } else if ((static_cast<u8>(vma.permissions) & static_cast<u8>(VMAPermission::Write)) == 0) {
+            memory.MapReadOnlyRegion(*page_table, vma.base, vma.size, vma.backing_memory);
+        } else {
+            memory.MapMemoryRegion(*page_table, vma.base, vma.size, vma.backing_memory);
+        }
         break;
     }
 

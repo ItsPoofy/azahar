@@ -36,24 +36,9 @@ macro(generate_build_info)
     string(SUBSTRING "${GIT_REV}" 0 7 GIT_SHORT_REV)
 
     # Set build version
-    set(REPO_NAME "")
-    set(BUILD_VERSION "0")
-    set(BUILD_FULLNAME "${GIT_SHORT_REV}")
-    if (NOT DEFINED GIT_TAG)
-        if ((DEFINED ENV{CI} AND DEFINED ENV{GITHUB_ACTIONS}))
-            if ($ENV{GITHUB_REF_TYPE} STREQUAL "tag")
-                set(GIT_TAG $ENV{GITHUB_REF_NAME})
-            endif()
-        elseif (EXISTS "${CMAKE_SOURCE_DIR}/GIT-COMMIT" AND EXISTS "${CMAKE_SOURCE_DIR}/GIT-TAG")
-            file(READ "${CMAKE_SOURCE_DIR}/GIT-TAG" GIT_TAG)
-            string(STRIP ${GIT_TAG} GIT_TAG)
-        endif()
-    endif()
-
-    if (DEFINED GIT_TAG AND NOT "${GIT_TAG}" STREQUAL "unknown")
-        set(BUILD_VERSION "${GIT_TAG}")
-        set(BUILD_FULLNAME "${BUILD_VERSION}")
-    endif()
+    set(REPO_NAME "DEBUGGER")
+    set(BUILD_VERSION "DEBUGGER")
+    set(BUILD_FULLNAME "DEBUGGER")
 
     # Set build variant
     set(BUILD_VARIANT "") # Empty string on non-Windows platforms

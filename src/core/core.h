@@ -12,6 +12,7 @@
 #include <boost/optional.hpp>
 #include <boost/serialization/version.hpp>
 #include "common/common_types.h"
+#include <boost/icl/interval_set.hpp>
 #include "common/vector_math.h"
 #include "core/arm/arm_interface.h"
 #include "core/cheats/cheats.h"
@@ -225,7 +226,20 @@ public:
         for (const auto& cpu : cpu_cores) {
             cpu->InvalidateCacheRange(start_address, length);
         }
+        ClearCodeDirty(start_address, static_cast<u32>(length));
     }
+
+    void ClearInstructionCache() {
+        for (const auto& cpu : cpu_cores) {
+            cpu->ClearInstructionCache();
+        }
+        ClearAllCodeDirty();
+    }
+
+    void MarkCodeDirty(u32 addr, u32 size);
+    void ClearCodeDirty(u32 addr, u32 size);
+    void ClearAllCodeDirty();
+    [[nodiscard]] bool IsCodeDirty(u32 addr) const;
 
     /**
      * Gets a reference to the emulated DSP.
@@ -553,6 +567,9 @@ private:
     int override_gdb_port = -1;
 
     std::thread::id core_loop_thread_id{};
+
+    mutable std::mutex dirty_code_mutex;
+    boost::icl::interval_set<u32> dirty_code_ranges;
 
     friend class boost::serialization::access;
     template <typename Archive>

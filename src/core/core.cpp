@@ -985,6 +985,32 @@ void System::serialize(Archive& ar, const unsigned int file_version) {
     save_state_status = SaveStateStatus::NONE;
 }
 
+void System::MarkCodeDirty(u32 addr, u32 size) {
+    if (size == 0) {
+        return;
+    }
+    std::lock_guard lock{dirty_code_mutex};
+    dirty_code_ranges.add(boost::icl::discrete_interval<u32>::right_open(addr, addr + size));
+}
+
+void System::ClearCodeDirty(u32 addr, u32 size) {
+    if (size == 0) {
+        return;
+    }
+    std::lock_guard lock{dirty_code_mutex};
+    dirty_code_ranges.subtract(boost::icl::discrete_interval<u32>::right_open(addr, addr + size));
+}
+
+void System::ClearAllCodeDirty() {
+    std::lock_guard lock{dirty_code_mutex};
+    dirty_code_ranges.clear();
+}
+
+bool System::IsCodeDirty(u32 addr) const {
+    std::lock_guard lock{dirty_code_mutex};
+    return boost::icl::contains(dirty_code_ranges, addr);
+}
+
 SERIALIZE_IMPL(System)
 
 } // namespace Core

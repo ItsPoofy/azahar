@@ -2068,16 +2068,12 @@ Result SVC::GetProcessList(s32* process_count, VAddr out_process_array,
 }
 
 Result SVC::InvalidateInstructionCacheRange(u32 addr, u32 size) {
-    for (size_t i = 0; i < system.GetNumCores(); i++) {
-        system.GetCore(i).InvalidateCacheRange(addr, size);
-    }
+    system.InvalidateCacheRange(addr, size);
     return ResultSuccess;
 }
 
 Result SVC::InvalidateEntireInstructionCache() {
-    for (size_t i = 0; i < system.GetNumCores(); i++) {
-        system.GetCore(i).ClearInstructionCache();
-    }
+    system.ClearInstructionCache();
     return ResultSuccess;
 }
 

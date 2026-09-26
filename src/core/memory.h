@@ -50,6 +50,11 @@ enum class PageType : u8 {
     /// Page is mapped to regular memory, but also needs to check for rasterizer cache flushing and
     /// invalidation. Furthermore a debug watchpoint is set to an address within the page.
     RasterizerCachedMemoryWatchpoint,
+    /// Page is mapped to read-only memory. Writes trigger a Data Abort.
+    ReadOnly,
+    /// Page is mapped to executable code. Writes trigger a Data Abort without ForceRWXPages,
+    /// and are tracked as dirty code when ForceRWXPages is enabled.
+    Code,
 };
 
 /**
@@ -90,8 +95,17 @@ struct PageTable {
             return Entry(*this, static_cast<VAddr>(idx));
         }
 
-        const MemoryRef& Ref(std::size_t idx) {
+        const MemoryRef& Ref(std::size_t idx) const {
             return refs[idx];
+        }
+
+        MemoryRef& Ref(std::size_t idx) {
+            return refs[idx];
+        }
+
+        void SetRefOnly(std::size_t idx, MemoryRef value) {
+            refs[idx] = std::move(value);
+            raw[idx] = nullptr;
         }
 
     private:
@@ -278,6 +292,8 @@ public:
      * @param target Buffer with the memory backing the mapping. Must be of length at least `size`.
      */
     void MapMemoryRegion(PageTable& page_table, VAddr base, u32 size, MemoryRef target);
+    void MapCodeRegion(PageTable& page_table, VAddr base, u32 size, MemoryRef target);
+    void MapReadOnlyRegion(PageTable& page_table, VAddr base, u32 size, MemoryRef target);
 
     void UnmapRegion(PageTable& page_table, VAddr base, u32 size);
 

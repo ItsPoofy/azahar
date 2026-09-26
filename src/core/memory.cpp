@@ -194,6 +194,12 @@ public:
                 std::memset(dest_buffer, 0, copy_amount);
                 break;
             }
+            case PageType::ReadOnly:
+            case PageType::Code: {
+                const u8* src_ptr = page_table.pointers.Ref(page_index).GetPtr() + page_offset;
+                std::memcpy(dest_buffer, src_ptr, copy_amount);
+                break;
+            }
             case PageType::Memory: {
                 DEBUG_ASSERT(page_table.pointers[page_index]);
 
@@ -250,6 +256,20 @@ public:
                     "unmapped WriteBlock @ 0x{:08X} (start address = 0x{:08X}, size = {}) at PC "
                     "0x{:08X}",
                     current_vaddr, dest_addr, size, GetPC());
+                break;
+            }
+            case PageType::ReadOnly: {
+                LOG_CRITICAL(
+                    HW_Memory,
+                    "Data Abort (Permission Fault): write to read-only memory @ 0x{:08X}",
+                    current_vaddr);
+                Core::LogException(system, Core::ExceptionType::DataAbort);
+                break;
+            }
+            case PageType::Code: {
+                u8* dest_ptr = page_table.pointers.Ref(page_index).GetPtr() + page_offset;
+                std::memcpy(dest_ptr, src_buffer, copy_amount);
+                system.MarkCodeDirty(current_vaddr, static_cast<u32>(copy_amount));
                 break;
             }
             case PageType::Memory: {
@@ -523,7 +543,11 @@ void MemorySystem::MapPages(PageTable& page_table, u32 base, u32 size, MemoryRef
         ASSERT_MSG(base < PAGE_TABLE_NUM_ENTRIES, "out of range mapping at {:08X}", base);
 
         page_table.attributes[base] = type;
-        page_table.pointers[base] = memory;
+        if (type == PageType::Code || type == PageType::ReadOnly) {
+            page_table.pointers.SetRefOnly(base, memory);
+        } else {
+            page_table.pointers[base] = memory;
+        }
 
         // If the memory to map is already rasterizer-cached, mark the page
         if (type == PageType::Memory && impl->cache_marker.IsCached(base * CITRA_PAGE_SIZE)) {
@@ -541,6 +565,18 @@ void MemorySystem::MapMemoryRegion(PageTable& page_table, VAddr base, u32 size, 
     ASSERT_MSG((size & CITRA_PAGE_MASK) == 0, "non-page aligned size: {:08X}", size);
     ASSERT_MSG((base & CITRA_PAGE_MASK) == 0, "non-page aligned base: {:08X}", base);
     MapPages(page_table, base / CITRA_PAGE_SIZE, size / CITRA_PAGE_SIZE, target, PageType::Memory);
+}
+
+void MemorySystem::MapCodeRegion(PageTable& page_table, VAddr base, u32 size, MemoryRef target) {
+    ASSERT_MSG((size & CITRA_PAGE_MASK) == 0, "non-page aligned size: {:08X}", size);
+    ASSERT_MSG((base & CITRA_PAGE_MASK) == 0, "non-page aligned base: {:08X}", base);
+    MapPages(page_table, base / CITRA_PAGE_SIZE, size / CITRA_PAGE_SIZE, target, PageType::Code);
+}
+
+void MemorySystem::MapReadOnlyRegion(PageTable& page_table, VAddr base, u32 size, MemoryRef target) {
+    ASSERT_MSG((size & CITRA_PAGE_MASK) == 0, "non-page aligned size: {:08X}", size);
+    ASSERT_MSG((base & CITRA_PAGE_MASK) == 0, "non-page aligned base: {:08X}", base);
+    MapPages(page_table, base / CITRA_PAGE_SIZE, size / CITRA_PAGE_SIZE, target, PageType::ReadOnly);
 }
 
 void MemorySystem::UnmapRegion(PageTable& page_table, VAddr base, u32 size) {
@@ -576,11 +612,9 @@ void MemorySystem::UnmappedAccess(const VAddr vaddr, const T value, bool read) {
         GDBStub::Break(SIGSEGV);
     }
 #endif
-    LOG_ERROR(HW_Memory, "{}", message);
-    if (Settings::values.enable_exception_handler) {
-        Core::LogException(impl->system, read ? Core::ExceptionType::UnmappedRead
-                                              : Core::ExceptionType::UnmappedWrite);
-    }
+    LOG_CRITICAL(HW_Memory, "{}", message);
+    Core::LogException(impl->system, read ? Core::ExceptionType::UnmappedRead
+                                          : Core::ExceptionType::UnmappedWrite);
 }
 
 template <typename T>
@@ -625,6 +659,21 @@ T MemorySystem::Read(const std::shared_ptr<PageTable>& page_table, const VAddr v
 
         UnmappedAccess<ReadType>(vaddr, 0, true);
 
+        if constexpr (is_optional) {
+            return std::nullopt;
+        } else {
+            return T{};
+        }
+    }
+    case PageType::ReadOnly:
+    case PageType::Code: {
+        const u8* ref_ptr = page_table->pointers.Ref(vaddr >> CITRA_PAGE_BITS).GetPtr();
+        if (ref_ptr) {
+            ReadType value;
+            std::memcpy(&value, &ref_ptr[vaddr & CITRA_PAGE_MASK], read_size);
+            return value;
+        }
+        UnmappedAccess<ReadType>(vaddr, 0, true);
         if constexpr (is_optional) {
             return std::nullopt;
         } else {
@@ -720,6 +769,27 @@ void MemorySystem::Write(const std::shared_ptr<PageTable>& page_table, const VAd
     case PageType::Unmapped:
         (void)UnmappedAccess<T>(vaddr, data, false);
         return;
+    case PageType::ReadOnly: {
+        LOG_CRITICAL(HW_Memory, "Data Abort (Permission Fault): write to read-only page @ 0x{:08X} at PC 0x{:08X}",
+                     vaddr, impl->GetPC());
+        Core::LogException(impl->system, Core::ExceptionType::DataAbort);
+        return;
+    }
+    case PageType::Code: {
+        auto current_process = impl->system.Kernel().GetCurrentProcess();
+        if (!current_process || !current_process->force_rwx_pages) {
+            LOG_CRITICAL(HW_Memory, "Data Abort (Permission Fault): write to code page @ 0x{:08X} without ForceRWXPages at PC 0x{:08X}",
+                         vaddr, impl->GetPC());
+            Core::LogException(impl->system, Core::ExceptionType::DataAbort);
+            return;
+        }
+        u8* ref_ptr = page_table->pointers.Ref(vaddr >> CITRA_PAGE_BITS).GetPtr();
+        if (ref_ptr) {
+            std::memcpy(&ref_ptr[vaddr & CITRA_PAGE_MASK], &data, sizeof(T));
+            impl->system.MarkCodeDirty(vaddr, sizeof(T));
+        }
+        return;
+    }
     case PageType::Memory:
         ASSERT_MSG(false, "Mapped memory page without a pointer @ {:08X}", vaddr);
         break;
@@ -775,6 +845,26 @@ bool MemorySystem::WriteExclusive(const VAddr vaddr, const T data, const T expec
     case PageType::Unmapped:
         (void)UnmappedAccess<T>(vaddr, data, false);
         return true;
+    case PageType::ReadOnly:
+        LOG_CRITICAL(HW_Memory, "Data Abort (Permission Fault): exclusive write to read-only page @ 0x{:08X}", vaddr);
+        Core::LogException(impl->system, Core::ExceptionType::DataAbort);
+        return false;
+    case PageType::Code: {
+        auto current_process = impl->system.Kernel().GetCurrentProcess();
+        if (!current_process || !current_process->force_rwx_pages) {
+            LOG_CRITICAL(HW_Memory, "Data Abort (Permission Fault): exclusive write to code page @ 0x{:08X} without ForceRWXPages", vaddr);
+            Core::LogException(impl->system, Core::ExceptionType::DataAbort);
+            return false;
+        }
+        u8* ref_ptr = impl->current_page_table->pointers.Ref(vaddr >> CITRA_PAGE_BITS).GetPtr();
+        if (ref_ptr) {
+            const auto volatile_pointer = reinterpret_cast<volatile T*>(ref_ptr + (vaddr & CITRA_PAGE_MASK));
+            bool ret = Common::AtomicCompareAndSwap(volatile_pointer, data, expected);
+            impl->system.MarkCodeDirty(vaddr, sizeof(T));
+            return ret;
+        }
+        return false;
+    }
     case PageType::Memory:
         ASSERT_MSG(false, "Mapped memory page without a pointer @ {:08X}", vaddr);
         return true;
@@ -853,6 +943,14 @@ u8* MemorySystem::GetPointer(const VAddr vaddr) {
         return GetPointerForRasterizerCache(vaddr);
     }
 
+    if (impl->current_page_table->attributes[vaddr >> CITRA_PAGE_BITS] == PageType::Code ||
+        impl->current_page_table->attributes[vaddr >> CITRA_PAGE_BITS] == PageType::ReadOnly) {
+        u8* ptr = impl->current_page_table->pointers.Ref(vaddr >> CITRA_PAGE_BITS).GetPtr();
+        if (ptr) {
+            return ptr + (vaddr & CITRA_PAGE_MASK);
+        }
+    }
+
     LOG_ERROR(HW_Memory, "unknown GetPointer @ 0x{:08x} at PC 0x{:08X}", vaddr, impl->GetPC());
     return nullptr;
 }
@@ -868,6 +966,14 @@ const u8* MemorySystem::GetPointer(const VAddr vaddr) const {
         impl->current_page_table->attributes[vaddr >> CITRA_PAGE_BITS] ==
             PageType::RasterizerCachedMemoryWatchpoint) {
         return GetPointerForRasterizerCache(vaddr);
+    }
+
+    if (impl->current_page_table->attributes[vaddr >> CITRA_PAGE_BITS] == PageType::Code ||
+        impl->current_page_table->attributes[vaddr >> CITRA_PAGE_BITS] == PageType::ReadOnly) {
+        const u8* ptr = impl->current_page_table->pointers.Ref(vaddr >> CITRA_PAGE_BITS).GetPtr();
+        if (ptr) {
+            return ptr + (vaddr & CITRA_PAGE_MASK);
+        }
     }
 
     LOG_ERROR(HW_Memory, "unknown GetPointer @ 0x{:08x}", vaddr);
