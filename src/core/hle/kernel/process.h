@@ -164,6 +164,7 @@ public:
     boost::container::static_vector<AddressMapping, 8> address_mappings;
     ProcessFlags flags;
     bool no_thread_restrictions = false;
+    bool force_rwx_pages = false;
     /// Kernel compatibility version for this process
     u16 kernel_version = 0;
     /// The default CPU for this process, threads are scheduled on this cpu by default.
@@ -223,7 +224,7 @@ public:
     Result HeapAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermission perms,
                         MemoryState memory_state = MemoryState::Private,
                         bool skip_range_check = false);
-    Result HeapFree(VAddr target, u32 size);
+    Result HeapFree(VAddr target, u32 size, bool skip_range_check = false);
 
     Result LinearAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermission perms);
     Result LinearFree(VAddr target, u32 size);

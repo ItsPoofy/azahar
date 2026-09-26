@@ -305,6 +305,9 @@ VAddr Process::GetLinearHeapLimit() const {
 Result Process::HeapAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermission perms,
                              MemoryState memory_state, bool skip_range_check) {
     LOG_DEBUG(Kernel, "Allocate heap target={:08X}, size={:08X}", target, size);
+    if (force_rwx_pages) {
+        perms = VMAPermission::ReadWriteExecute;
+    }
     if (target < Memory::HEAP_VADDR || target + size > Memory::HEAP_VADDR_END ||
         target + size < target) {
         if (!skip_range_check) {
@@ -350,12 +353,14 @@ Result Process::HeapAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermiss
     return ResultSuccess;
 }
 
-Result Process::HeapFree(VAddr target, u32 size) {
+Result Process::HeapFree(VAddr target, u32 size, bool skip_range_check) {
     LOG_DEBUG(Kernel, "Free heap target={:08X}, size={:08X}", target, size);
     if (target < Memory::HEAP_VADDR || target + size > Memory::HEAP_VADDR_END ||
         target + size < target) {
-        LOG_ERROR(Kernel, "Invalid heap address");
-        return ResultInvalidAddress;
+        if (!skip_range_check) {
+            LOG_ERROR(Kernel, "Invalid heap address");
+            return ResultInvalidAddress;
+        }
     }
 
     R_SUCCEED_IF(size == 0);
@@ -379,6 +384,9 @@ Result Process::HeapFree(VAddr target, u32 size) {
 
 Result Process::LinearAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermission perms) {
     LOG_DEBUG(Kernel, "Allocate linear heap target={:08X}, size={:08X}", target, size);
+    if (force_rwx_pages) {
+        perms = VMAPermission::ReadWriteExecute;
+    }
     u32 physical_offset;
     if (target == 0) {
         auto offset = memory_region->LinearAllocate(size);
@@ -519,6 +527,9 @@ ResultVal<VAddr> Process::AllocateThreadLocalStorage() {
 Result Process::Map(VAddr target, VAddr source, u32 size, VMAPermission perms, bool privileged) {
     LOG_DEBUG(Kernel, "Map memory target={:08X}, source={:08X}, size={:08X}, perms={:08X}", target,
               source, size, perms);
+    if (force_rwx_pages) {
+        perms = VMAPermission::ReadWriteExecute;
+    }
     if (!privileged && (source < Memory::HEAP_VADDR || source + size > Memory::HEAP_VADDR_END ||
                         source + size < source)) {
         LOG_ERROR(Kernel, "Invalid source address");

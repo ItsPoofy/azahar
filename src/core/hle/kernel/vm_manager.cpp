@@ -11,6 +11,7 @@
 #include "common/assert.h"
 #include "core/core.h"
 #include "core/hle/kernel/errors.h"
+#include "core/hle/kernel/process.h"
 #include "core/hle/kernel/vm_manager.h"
 #include "core/hle/service/plgldr/plgldr.h"
 #include "core/memory.h"
@@ -123,7 +124,8 @@ ResultVal<VMManager::VMAHandle> VMManager::MapBackingMemory(VAddr target, Memory
     ASSERT(final_vma.size == size);
 
     final_vma.type = VMAType::BackingMemory;
-    final_vma.permissions = VMAPermission::ReadWrite;
+    final_vma.permissions =
+        process.force_rwx_pages ? VMAPermission::ReadWriteExecute : VMAPermission::ReadWrite;
     final_vma.meminfo_state = state;
     final_vma.backing_memory = memory;
     UpdatePageTableForVMA(final_vma);
@@ -162,7 +164,8 @@ Result VMManager::ChangeMemoryState(VAddr target, u32 size, MemoryState expected
     // The comparison against the end of the range must be done using addresses since VMAs can be
     // merged during this process, causing invalidation of the iterators.
     while (vma != end && vma->second.base < target_end) {
-        vma->second.permissions = new_perms;
+        vma->second.permissions =
+            process.force_rwx_pages ? VMAPermission::ReadWriteExecute : new_perms;
         vma->second.meminfo_state = new_state;
         UpdatePageTableForVMA(vma->second);
         vma = std::next(MergeAdjacent(vma));
@@ -208,7 +211,7 @@ VMManager::VMAHandle VMManager::Reprotect(VMAHandle vma_handle, VMAPermission ne
     VMAIter iter = StripIterConstness(vma_handle);
 
     VirtualMemoryArea& vma = iter->second;
-    vma.permissions = new_perms;
+    vma.permissions = process.force_rwx_pages ? VMAPermission::ReadWriteExecute : new_perms;
     UpdatePageTableForVMA(vma);
 
     return MergeAdjacent(iter);

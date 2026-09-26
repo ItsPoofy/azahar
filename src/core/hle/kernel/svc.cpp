@@ -498,6 +498,17 @@ private:
                               Handle dst_process_handle_backup);
     Result UnmapProcessMemoryEx(Handle process, u32 dst_address, u32 size);
     Result ControlProcess(Handle process_handle, u32 process_OP, u32 varg2, u32 varg3);
+    Result CustomBackdoor(VAddr func);
+    void FlushDataCacheRange(VAddr addr, u32 size);
+    void FlushEntireDataCache();
+    Result ControlMemoryEx(u32* out_addr, u32 addr0, u32 addr1, u32 size, u32 operation,
+                           u32 permissions, bool is_loader);
+    Result ControlMemoryUnsafe(VAddr out_addr, u32 addr0, u32 size, u32 operation,
+                               u32 permissions);
+    Result ControlService(u32 service_op, u32 varg1, u32 varg2);
+    Result CopyHandle(Handle* out, Handle out_process_handle, Handle in_handle,
+                      Handle in_process_handle);
+    Result TranslateHandle(u32* out_kaddr, VAddr out_class_name, Handle in_handle);
 
     struct FunctionDef {
         using Func = void (SVC::*)();
@@ -532,12 +543,14 @@ Result SVC::ControlMemory(u32* out_addr, u32 addr0, u32 addr1, u32 size, u32 ope
                     region);
     }
 
-    if ((permissions & (u32)MemoryPermission::ReadWrite) != permissions) {
+    auto& process = *kernel.GetCurrentProcess();
+
+    if (!process.force_rwx_pages &&
+        (permissions & (u32)MemoryPermission::ReadWrite) != permissions) {
         return ResultInvalidCombination;
     }
-    VMAPermission vma_permissions = (VMAPermission)permissions;
-
-    auto& process = *kernel.GetCurrentProcess();
+    VMAPermission vma_permissions =
+        process.force_rwx_pages ? VMAPermission::ReadWriteExecute : (VMAPermission)permissions;
 
     switch (operation & MEMOP_OPERATION_MASK) {
     case MEMOP_FREE: {
@@ -2158,6 +2171,7 @@ Result SVC::ControlProcess(Handle process_handle, u32 process_OP, u32 varg2, u32
 
     switch (static_cast<ControlProcessOP>(process_OP)) {
     case ControlProcessOP::PROCESSOP_SET_MMU_TO_RWX: {
+        process->force_rwx_pages = true;
         for (auto it = process->vm_manager.vma_map.cbegin();
              it != process->vm_manager.vma_map.cend(); it++) {
             if (it->second.meminfo_state != MemoryState::Free)
@@ -2204,14 +2218,183 @@ Result SVC::ControlProcess(Handle process_handle, u32 process_OP, u32 varg2, u32
         process->no_thread_restrictions = varg2 == 1;
         return ResultSuccess;
     }
-    case ControlProcessOP::PROCESSOP_GET_ALL_HANDLES:
-    case ControlProcessOP::PROCESSOP_GET_PA_FROM_VA:
-    case ControlProcessOP::PROCESSOP_SIGNAL_ON_EXIT:
-    case ControlProcessOP::PROCESSOP_SCHEDULE_THREADS:
+    case ControlProcessOP::PROCESSOP_GET_PA_FROM_VA: {
+        u32 vaddr = varg3;
+        u32 pa = 0;
+        auto vma = process->vm_manager.FindVMA(vaddr);
+        if (vma != process->vm_manager.vma_map.end() && vma->second.type == VMAType::BackingMemory) {
+            pa = kernel.memory.GetFCRAMOffset(vma->second.backing_memory.GetPtr() + vaddr -
+                                              vma->second.base) +
+                 Memory::FCRAM_PADDR;
+        }
+        if (varg2 != 0) {
+            memory.Write32(varg2, pa);
+        }
+        return ResultSuccess;
+    }
+    case ControlProcessOP::PROCESSOP_SIGNAL_ON_EXIT: {
+        return ResultSuccess;
+    }
+    case ControlProcessOP::PROCESSOP_SCHEDULE_THREADS: {
+        for (u32 core_id = 0; core_id < system.GetNumCores(); core_id++) {
+            const auto thread_list = kernel.GetThreadManager(core_id).GetThreadList();
+            for (auto& thread : thread_list) {
+                if (thread->owner_process.lock() != process) {
+                    continue;
+                }
+                if (thread.get()->thread_id ==
+                    kernel.GetCurrentThreadManager().GetCurrentThread()->thread_id) {
+                    continue;
+                }
+                if (varg2) {
+                    thread->SetUnscheduleMode(Kernel::UnscheduleMode::SVC);
+                } else {
+                    thread->ClearUnscheduleMode(Kernel::UnscheduleMode::SVC);
+                }
+            }
+        }
+        return ResultSuccess;
+    }
+    case ControlProcessOP::PROCESSOP_GET_ALL_HANDLES: {
+        return ResultSuccess;
+    }
     default:
         LOG_ERROR(Kernel_SVC, "Unknown ControlProcessOp type={}", process_OP);
         return ResultNotImplemented;
     }
+}
+
+Result SVC::CustomBackdoor(VAddr func) {
+    LOG_DEBUG(Kernel_SVC, "called CustomBackdoor func=0x{:08X}", func);
+    return ResultSuccess;
+}
+
+void SVC::FlushDataCacheRange(VAddr addr, u32 size) {
+    LOG_TRACE(Kernel_SVC, "called FlushDataCacheRange addr=0x{:08X}, size=0x{:X}", addr, size);
+}
+
+void SVC::FlushEntireDataCache() {
+    LOG_TRACE(Kernel_SVC, "called FlushEntireDataCache");
+}
+
+Result SVC::ControlMemoryEx(u32* out_addr, u32 addr0, u32 addr1, u32 size, u32 operation,
+                            u32 permissions, bool is_loader) {
+    LOG_DEBUG(Kernel_SVC,
+              "called ControlMemoryEx operation=0x{:08X}, addr0=0x{:08X}, addr1=0x{:08X}, "
+              "size=0x{:X}, permissions=0x{:08X}, is_loader={}",
+              operation, addr0, addr1, size, permissions, is_loader);
+    return ControlMemory(out_addr, addr0, addr1, size, operation, permissions);
+}
+
+Result SVC::ControlMemoryUnsafe(VAddr out_addr, u32 addr0, u32 size, u32 operation,
+                                u32 permissions) {
+    LOG_DEBUG(Kernel_SVC,
+              "called ControlMemoryUnsafe out_addr=0x{:08X}, addr0=0x{:08X}, size=0x{:X}, "
+              "operation=0x{:08X}, permissions=0x{:08X}",
+              out_addr, addr0, size, operation, permissions);
+
+    auto& process = *kernel.GetCurrentProcess();
+    VMAPermission vma_permissions =
+        process.force_rwx_pages ? VMAPermission::ReadWriteExecute : static_cast<VMAPermission>(permissions);
+
+    u32 allocated_addr = addr0;
+    Result res = ResultSuccess;
+
+    switch (operation & MEMOP_OPERATION_MASK) {
+    case MEMOP_FREE: {
+        if (addr0 >= process.GetLinearHeapBase() && addr0 < process.GetLinearHeapLimit()) {
+            res = process.LinearFree(addr0, size);
+        } else {
+            res = process.HeapFree(addr0, size, true);
+        }
+        allocated_addr = addr0;
+        break;
+    }
+    case MEMOP_COMMIT: {
+        if (operation & MEMOP_LINEAR) {
+            res = process.LinearAllocate(&allocated_addr, addr0, size, vma_permissions);
+        } else {
+            res = process.HeapAllocate(&allocated_addr, addr0, size, vma_permissions,
+                                       MemoryState::Private, true);
+        }
+        break;
+    }
+    case MEMOP_MAP: {
+        res = process.Map(addr0, 0, size, vma_permissions, true);
+        allocated_addr = addr0;
+        break;
+    }
+    case MEMOP_UNMAP: {
+        res = process.Unmap(addr0, 0, size, vma_permissions, true);
+        allocated_addr = addr0;
+        break;
+    }
+    case MEMOP_PROTECT: {
+        res = process.vm_manager.ReprotectRange(addr0, size, vma_permissions);
+        allocated_addr = addr0;
+        break;
+    }
+    default:
+        LOG_ERROR(Kernel_SVC, "ControlMemoryUnsafe unknown operation=0x{:08X}", operation);
+        return ResultInvalidCombination;
+    }
+
+    if (res.IsSuccess() && out_addr != 0) {
+        memory.Write32(out_addr, allocated_addr);
+    }
+    return res;
+}
+
+Result SVC::ControlService(u32 service_op, u32 varg1, u32 varg2) {
+    LOG_DEBUG(Kernel_SVC, "called ControlService op={}", service_op);
+    return ResultSuccess;
+}
+
+Result SVC::CopyHandle(Handle* out, Handle out_process_handle, Handle in_handle,
+                      Handle in_process_handle) {
+    LOG_DEBUG(Kernel_SVC, "called CopyHandle out_proc=0x{:08X}, in=0x{:08X}, in_proc=0x{:08X}",
+              out_process_handle, in_handle, in_process_handle);
+
+    std::shared_ptr<Process> src_process =
+        (in_process_handle == Kernel::CurrentProcess || in_process_handle == 0)
+            ? kernel.GetCurrentProcess()
+            : kernel.GetCurrentProcess()->handle_table.Get<Process>(in_process_handle);
+    std::shared_ptr<Process> dst_process =
+        (out_process_handle == Kernel::CurrentProcess || out_process_handle == 0)
+            ? kernel.GetCurrentProcess()
+            : kernel.GetCurrentProcess()->handle_table.Get<Process>(out_process_handle);
+
+    R_UNLESS(src_process && dst_process, ResultInvalidHandle);
+
+    std::shared_ptr<Object> obj;
+    if (in_handle == Kernel::CurrentProcess) {
+        obj = src_process;
+    } else {
+        obj = src_process->handle_table.GetGeneric(in_handle);
+    }
+    R_UNLESS(obj, ResultInvalidHandle);
+
+    return dst_process->handle_table.Create(out, obj);
+}
+
+Result SVC::TranslateHandle(u32* out_kaddr, VAddr out_class_name, Handle in_handle) {
+    LOG_DEBUG(Kernel_SVC, "called TranslateHandle in=0x{:08X}", in_handle);
+    auto process = kernel.GetCurrentProcess();
+    std::shared_ptr<Object> obj;
+    if (in_handle == Kernel::CurrentProcess) {
+        obj = process;
+    } else {
+        obj = process->handle_table.GetGeneric(in_handle);
+    }
+    R_UNLESS(obj, ResultInvalidHandle);
+
+    *out_kaddr = 0xEFF00000 | (in_handle & 0xFFFF);
+    if (out_class_name != 0) {
+        std::string name = obj->GetTypeName();
+        memory.WriteBlock(*process, out_class_name, name.c_str(),
+                          std::min<std::size_t>(name.size() + 1, 12));
+    }
+    return ResultSuccess;
 }
 
 // Array of SVC handlers, and the cycles it takes to process them.
@@ -2361,7 +2544,7 @@ const std::array<SVC::FunctionDef, 180> SVC::SVC_Table{{
     // Custom SVCs
     {0x7E, nullptr, "Unused", 1000},
     {0x7F, nullptr, "Unused", 1000},
-    {0x80, nullptr, "CustomBackdoor", 1000},
+    {0x80, &SVC::Wrap<&SVC::CustomBackdoor, 0x80>, "CustomBackdoor", 1000},
     {0x81, nullptr, "Unused", 1000},
     {0x82, nullptr, "Unused", 1000},
     {0x83, nullptr, "Unused", 1000},
@@ -2378,8 +2561,8 @@ const std::array<SVC::FunctionDef, 180> SVC::SVC_Table{{
     {0x8E, nullptr, "Unused", 1000},
     {0x8F, nullptr, "Unused", 1000},
     {0x90, &SVC::Wrap<&SVC::ConvertVaToPa, 0x90>, "ConvertVaToPa", 1000},
-    {0x91, nullptr, "FlushDataCacheRange", 1000},
-    {0x92, nullptr, "FlushEntireDataCache", 1000},
+    {0x91, &SVC::Wrap<&SVC::FlushDataCacheRange, 0x91>, "FlushDataCacheRange", 1000},
+    {0x92, &SVC::Wrap<&SVC::FlushEntireDataCache, 0x92>, "FlushEntireDataCache", 1000},
     {0x93, &SVC::Wrap<&SVC::InvalidateInstructionCacheRange, 0x93>,
      "InvalidateInstructionCacheRange", 1000},
     {0x94, &SVC::Wrap<&SVC::InvalidateEntireInstructionCache, 0x94>,
@@ -2397,8 +2580,8 @@ const std::array<SVC::FunctionDef, 180> SVC::SVC_Table{{
     {0x9F, nullptr, "Unused", 1000},
     {0xA0, &SVC::Wrap<&SVC::MapProcessMemoryEx, 0xA0>, "MapProcessMemoryEx", 1000},
     {0xA1, &SVC::Wrap<&SVC::UnmapProcessMemoryEx, 0xA1>, "UnmapProcessMemoryEx", 1000},
-    {0xA2, nullptr, "ControlMemoryEx", 1000},
-    {0xA3, nullptr, "ControlMemoryUnsafe", 1000},
+    {0xA2, &SVC::Wrap<&SVC::ControlMemoryEx, 0xA2>, "ControlMemoryEx", 1000},
+    {0xA3, &SVC::Wrap<&SVC::ControlMemoryUnsafe, 0xA3>, "ControlMemoryUnsafe", 1000},
     {0xA4, nullptr, "Unused", 1000},
     {0xA5, nullptr, "Unused", 1000},
     {0xA6, nullptr, "Unused", 1000},
@@ -2411,9 +2594,9 @@ const std::array<SVC::FunctionDef, 180> SVC::SVC_Table{{
     {0xAD, nullptr, "Unused", 1000},
     {0xAE, nullptr, "Unused", 1000},
     {0xAF, nullptr, "Unused", 1000},
-    {0xB0, nullptr, "ControlService", 1000},
-    {0xB1, nullptr, "CopyHandle", 1000},
-    {0xB2, nullptr, "TranslateHandle", 1000},
+    {0xB0, &SVC::Wrap<&SVC::ControlService, 0xB0>, "ControlService", 1000},
+    {0xB1, &SVC::Wrap<&SVC::CopyHandle, 0xB1>, "CopyHandle", 1000},
+    {0xB2, &SVC::Wrap<&SVC::TranslateHandle, 0xB2>, "TranslateHandle", 1000},
     {0xB3, &SVC::Wrap<&SVC::ControlProcess, 0xB3>, "ControlProcess", 1000},
 }};
 
