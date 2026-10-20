@@ -1,6 +1,6 @@
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// Licensed under GPLv3 or any later version
+// Refer to the LICENSE.txt file included.
 
 #include <algorithm>
 #include <array>
@@ -62,6 +62,8 @@ const std::vector<UISettings::Shortcut> QtConfig::default_hotkeys{ {
      {QStringLiteral("Audio Volume Down"),        QStringLiteral("Main Window"), {QStringLiteral(""),       QStringLiteral(""), Qt::ApplicationShortcut}},
      {QStringLiteral("Audio Volume Up"),          QStringLiteral("Main Window"), {QStringLiteral(""),       QStringLiteral(""), Qt::ApplicationShortcut}},
      {QStringLiteral("Capture Screenshot"),       QStringLiteral("Main Window"), {QStringLiteral("Ctrl+P"), QStringLiteral(""), Qt::ApplicationShortcut}},
+     {QStringLiteral("Configure"),                QStringLiteral("Main Window"), {QStringLiteral("Ctrl+,"), QStringLiteral(""), Qt::ApplicationShortcut}},
+     {QStringLiteral("Configure Current Application"),        QStringLiteral("Main Window"), {QStringLiteral("Ctrl+."), QStringLiteral(""), Qt::ApplicationShortcut}},
      {QStringLiteral("Continue/Pause Emulation"), QStringLiteral("Main Window"), {QStringLiteral("F4"),     QStringLiteral(""), Qt::ApplicationShortcut}},
      {QStringLiteral("Debug Pause"),              QStringLiteral("Main Window"), {QStringLiteral(""),       QStringLiteral(""), Qt::ApplicationShortcut}},
      {QStringLiteral("Debug Resume"),             QStringLiteral("Main Window"), {QStringLiteral(""),       QStringLiteral(""), Qt::ApplicationShortcut}},
@@ -94,7 +96,6 @@ const std::vector<UISettings::Shortcut> QtConfig::default_hotkeys{ {
      {QStringLiteral("Toggle 3D"),                QStringLiteral("Main Window"), {QStringLiteral("Ctrl+3"), QStringLiteral(""), Qt::ApplicationShortcut}},
      {QStringLiteral("Toggle Custom Textures"),   QStringLiteral("Main Window"), {QStringLiteral("F7"),     QStringLiteral(""), Qt::ApplicationShortcut}},
      {QStringLiteral("Toggle Filter Bar"),        QStringLiteral("Main Window"), {QStringLiteral("Ctrl+F"), QStringLiteral(""), Qt::ApplicationShortcut}},
-     {QStringLiteral("Toggle Frame Advancing"),   QStringLiteral("Main Window"), {QStringLiteral("Ctrl+A"), QStringLiteral(""), Qt::ApplicationShortcut}},
      {QStringLiteral("Toggle Per-Application Speed"),  QStringLiteral("Main Window"), {QStringLiteral("Ctrl+Z"), QStringLiteral(""), Qt::ApplicationShortcut}},
      {QStringLiteral("Toggle Screen Layout"),     QStringLiteral("Main Window"), {QStringLiteral("F10"),    QStringLiteral(""), Qt::ApplicationShortcut}},
      {QStringLiteral("Toggle Status Bar"),        QStringLiteral("Main Window"), {QStringLiteral("Ctrl+S"), QStringLiteral(""), Qt::ApplicationShortcut}},

@@ -1,6 +1,6 @@
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// Licensed under GPLv3 or any later version
+// Refer to the LICENSE.txt file included.
 
 package org.citra.citra_emu.activities
 
@@ -11,6 +11,7 @@ import android.content.SharedPreferences
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -26,6 +27,7 @@ import androidx.core.os.BundleCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.navigation.NavOptions
 import androidx.navigation.fragment.NavHostFragment
 import androidx.preference.PreferenceManager
 import org.citra.citra_emu.CitraApplication
@@ -73,7 +75,7 @@ class EmulationActivity : AppCompatActivity() {
     lateinit var secondaryDisplayManager: SecondaryDisplay
 
     private val onShutdown = Runnable {
-        if (intent.getBooleanExtra("launched_from_shortcut", false)) {
+        if (intent.getBooleanExtra("launchedFromShortcut", false)) {
             finishAffinity()
         } else {
             this.finish()
@@ -150,9 +152,15 @@ class EmulationActivity : AppCompatActivity() {
         enableFullscreenImmersive()
 
         // Override Citra core INI with the one set by our in game menu
+        val displayRotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            display.rotation
+        } else {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.rotation
+        }
         NativeLibrary.swapScreens(
             EmulationMenuSettings.swapScreens,
-            windowManager.defaultDisplay.rotation
+            displayRotation
         )
 
         EmulationLifecycleUtil.addShutdownHook(onShutdown)
@@ -177,6 +185,11 @@ class EmulationActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        val launchUri = getLaunchUri(intent)
+        if (launchUri != null && launchUri != Uri.EMPTY && launchUri == getLaunchUri(this.intent)) {
+            Log.info("[EmulationActivity] Ignoring relaunch of the running game")
+            return
+        }
         setIntent(intent)
 
         NativeLibrary.stopEmulation()
@@ -196,7 +209,24 @@ class EmulationActivity : AppCompatActivity() {
 
         val navHostFragment =
             supportFragmentManager.findFragmentById(R.id.fragment_container) as NavHostFragment
-        navHostFragment.navController.setGraph(R.navigation.emulation_navigation, intent.extras)
+        navHostFragment.navController.navigate(
+            R.id.emulationFragment,
+            intent.extras,
+            NavOptions.Builder().setPopUpTo(R.id.emulationFragment, true).build()
+        )
+    }
+
+    private fun getLaunchUri(intent: Intent): Uri? = try {
+        val game = intent.extras?.let { extras ->
+            BundleCompat.getParcelable(extras, "game", Game::class.java)
+        }
+        if (game != null) {
+            game.launchIntent.data
+        } else {
+            intent.data ?: intent.getStringExtra("SelectedGame")?.toUri()
+        }
+    } catch (e: Exception) {
+        null
     }
 
     // On some devices, the system bars will not disappear on first boot or after some
