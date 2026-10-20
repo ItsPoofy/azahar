@@ -16,6 +16,7 @@
 #include "common/swap.h"
 #include "core/core.h"
 #include "core/file_sys/ncch_container.h"
+#include "core/file_sys/luma_layered_fs.h"
 #include "core/file_sys/title_metadata.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/process.h"
@@ -170,6 +171,9 @@ ResultStatus AppLoader_NCCH::LoadExec(std::shared_ptr<Kernel::Process>& process)
         if (patch_result != ResultStatus::Success && patch_result != ResultStatus::ErrorNotUsed)
             return patch_result;
 
+        if (!FileSys::ApplyLumaLayeredFs(code, overlay_ncch->exheader_header.codeset_info, program_id))
+            return ResultStatus::ErrorPatches;
+
         codeset->entrypoint = codeset->CodeSegment().addr;
         codeset->memory = std::move(code);
 
@@ -243,7 +247,9 @@ ResultStatus AppLoader_NCCH::LoadExec(std::shared_ptr<Kernel::Process>& process)
         product_info.maker_code = overlay_ncch->ncch_header.maker_code;
         fs_user->RegisterProductInfo(process->process_id, product_info);
 
-        process->Run(priority, stack_size);
+        if (!process->Run(priority, stack_size)) {
+            return ResultStatus::ErrorMemoryAllocationFailed;
+        }
         return ResultStatus::Success;
     }
     return ResultStatus::Error;

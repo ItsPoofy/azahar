@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <memory>
+#include <vector>
 #include <boost/serialization/export.hpp>
 #include "common/common_types.h"
 #include "core/hle/kernel/object.h"
@@ -78,6 +79,12 @@ public:
      */
     std::shared_ptr<Object> GetGeneric(Handle handle) const;
 
+    /// Applies the per-process handle-table capacity encoded in the ExHeader.
+    void SetMaxCount(std::size_t count);
+
+    /// Returns every live handle, optionally filtering by the Luma3DS KClass token.
+    std::vector<Handle> GetHandles(u32 type_token = 0) const;
+
     /**
      * Looks up a handle while verifying its type.
      * @return Pointer to the looked-up object, or `nullptr` if the handle is not valid or its
@@ -92,6 +99,10 @@ public:
     void Clear();
 
 private:
+    // Kernel11 uses the table embedded in KProcessHandleTable when the ExHeader requests no
+    // external table. The embedded table contains 40 descriptors.
+    static constexpr std::size_t INTERNAL_COUNT = 40;
+
     /**
      * This is the maximum limit of handles allowed per process in CTR-OS. It can be further
      * reduced by ExHeader values, but this is not emulated here.
@@ -106,6 +117,8 @@ private:
      * empty slots, contains the index of the next free slot in the list.
      */
     std::array<u16, MAX_COUNT> generations;
+
+    std::size_t max_count = 0x200;
 
     /**
      * Global counter of the number of created handles. Stored in `generations` when a handle is

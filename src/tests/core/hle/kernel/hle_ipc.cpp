@@ -399,3 +399,75 @@ TEST_CASE("HLERequestContext::WriteToOutgoingCommandBuffer", "[core][kernel]") {
 }
 
 } // namespace Kernel
+
+namespace Kernel {
+TEST_CASE("IPC rejects invalid guest buffers without host assertions", "[core][kernel][accuracy]") {
+    Core::Timing timing(1, 100);
+    Core::System system;
+    Memory::MemorySystem memory{system};
+    Kernel::KernelSystem kernel(memory, timing, [] {}, Kernel::MemoryMode::NewProd, 1);
+    auto [server, client] = kernel.CreateSessionPair();
+    HLERequestContext context(kernel, std::move(server), nullptr);
+    auto process = kernel.CreateProcess(kernel.CreateCodeSet("", 0));
+    auto backing = std::make_shared<BufferMem>(0x1000);
+    REQUIRE(process->vm_manager.MapBackingMemory(0x10000000, MemoryRef(backing), 0x1000,
+                                                MemoryState::Private).Succeeded());
+    SECTION("static buffer crosses an unmapped page") {
+        const u32_le request[]{IPC::MakeHeader(1, 0, 2), IPC::StaticBufferDesc(2, 0), 0x10000fff};
+        CHECK(context.PopulateFromIncomingCommandBuffer(request, process) == ResultInvalidAddressState);
+    }
+    SECTION("mapped buffer crosses an unmapped page") {
+        const u32_le request[]{IPC::MakeHeader(1, 0, 2), IPC::MappedBufferDesc(2, IPC::RW), 0x10000fff};
+        CHECK(context.PopulateFromIncomingCommandBuffer(request, process) == ResultInvalidAddressState);
+    }
+    SECTION("mapped buffer does not have write access") {
+        REQUIRE(process->vm_manager.ReprotectRange(0x10000000, 0x1000, VMAPermission::Read) == ResultSuccess);
+        const u32_le request[]{IPC::MakeHeader(1, 0, 2), IPC::MappedBufferDesc(1, IPC::W), 0x10000000};
+        CHECK(context.PopulateFromIncomingCommandBuffer(request, process) == ResultInvalidAddressState);
+        process->force_rwx_pages = true;
+        CHECK(context.PopulateFromIncomingCommandBuffer(request, process) == ResultSuccess);
+    }
+    SECTION("truncated descriptor") {
+        const u32_le request[]{IPC::MakeHeader(1, 0, 1), IPC::StaticBufferDesc(1, 0)};
+        CHECK(context.PopulateFromIncomingCommandBuffer(request, process) == IPC::ResultInvalidBufferDescriptor);
+    }
+    SECTION("truncated handle list") {
+        const u32_le request[]{IPC::MakeHeader(1, 0, 2), IPC::CopyHandleDesc(2), 0};
+        CHECK(context.PopulateFromIncomingCommandBuffer(request, process).IsError());
+    }
+    SECTION("invalid transferred handle becomes null as in kernel translation") {
+        const u32_le request[]{IPC::MakeHeader(1, 0, 2), IPC::CopyHandleDesc(1), 0xdeadbeef};
+        REQUIRE(context.PopulateFromIncomingCommandBuffer(request, process) == ResultSuccess);
+        CHECK(context.GetIncomingHandle(context.CommandBuffer()[2]) == nullptr);
+    }
+    SECTION("multi-handle move closes every source handle") {
+        Handle first, second;
+        REQUIRE(process->handle_table.Create(&first, MakeObject(kernel)) == ResultSuccess);
+        REQUIRE(process->handle_table.Create(&second, MakeObject(kernel)) == ResultSuccess);
+        const u32_le request[]{IPC::MakeHeader(1, 0, 3), IPC::MoveHandleDesc(2), first, second};
+        REQUIRE(context.PopulateFromIncomingCommandBuffer(request, process) == ResultSuccess);
+        CHECK_FALSE(process->handle_table.IsValid(first));
+        CHECK_FALSE(process->handle_table.IsValid(second));
+    }
+}
+
+TEST_CASE("IPC response respects client handle-table capacity", "[core][kernel][accuracy]") {
+    Core::Timing timing(1, 100);
+    Core::System system;
+    Memory::MemorySystem memory{system};
+    Kernel::KernelSystem kernel(memory, timing, [] {}, Kernel::MemoryMode::NewProd, 1);
+    auto [server, client] = kernel.CreateSessionPair();
+    HLERequestContext context(kernel, std::move(server), nullptr);
+    auto process = kernel.CreateProcess(kernel.CreateCodeSet("", 0));
+    process->handle_table.SetMaxCount(1);
+    Handle occupied;
+    REQUIRE(process->handle_table.Create(&occupied, MakeObject(kernel)) == ResultSuccess);
+    auto* buffer = context.CommandBuffer();
+    buffer[0] = IPC::MakeHeader(1, 1, 2);
+    buffer[1] = 0;
+    buffer[2] = IPC::MoveHandleDesc(1);
+    buffer[3] = context.AddOutgoingHandle(MakeObject(kernel));
+    std::array<u32_le, IPC::COMMAND_BUFFER_LENGTH> output{};
+    CHECK(context.WriteToOutgoingCommandBuffer(output.data(), *process) == ResultOutOfHandles);
+}
+}

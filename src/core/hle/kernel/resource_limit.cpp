@@ -6,6 +6,7 @@
 #include <boost/serialization/base_object.hpp>
 #include <boost/serialization/shared_ptr.hpp>
 #include <boost/serialization/string.hpp>
+#include <limits>
 #include "common/archives.h"
 #include "common/assert.h"
 #include "common/settings.h"
@@ -54,23 +55,22 @@ void ResourceLimit::SetLimitValue(ResourceLimitType type, s32 value) {
 bool ResourceLimit::Reserve(ResourceLimitType type, s32 amount) {
     const auto index = static_cast<std::size_t>(type);
     const s32 limit = m_limit_values[index];
-    const s32 new_value = m_current_values[index] + amount;
-    // TODO(PabloMK7): Fix all resource limit bugs and return an error, instead of ignoring it.
-    if (new_value > limit) {
-        LOG_ERROR(Kernel, "New value {} exceeds limit {} for resource type {}", new_value, limit,
-                  type);
+    const s64 new_value = static_cast<s64>(m_current_values[index]) + amount;
+    if (amount < 0 || new_value > limit || new_value > std::numeric_limits<s32>::max()) {
+        LOG_ERROR(Kernel, "Reservation {} exceeds limit {} for resource type {}", amount, limit, type);
+        return false;
     }
-    m_current_values[index] = new_value;
+    m_current_values[index] = static_cast<s32>(new_value);
     return true;
 }
 
 bool ResourceLimit::Release(ResourceLimitType type, s32 amount) {
     const auto index = static_cast<std::size_t>(type);
     const s32 value = m_current_values[index];
-    // TODO(PabloMK7): Fix all resource limit bugs and return an error, instead of ignoring it.
-    if (amount > value) {
+    if (amount < 0 || amount > value) {
         LOG_ERROR(Kernel, "Amount {} exceeds current value {} for resource type {}", amount, value,
                   type);
+        return false;
     }
     m_current_values[index] = value - amount;
     return true;

@@ -231,6 +231,8 @@ static_assert(sizeof(ExHeader_Header) == 0x800, "ExHeader structure size is wron
 
 namespace FileSys {
 
+u64 GetModId(u64 program_id);
+
 /**
  * Helper which implements an interface to deal with NCCH containers which can
  * contain ExeFS archives or RomFS archives for games or other applications.

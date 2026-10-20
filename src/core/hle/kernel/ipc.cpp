@@ -39,7 +39,9 @@ Result TranslateCommandBuffer(Kernel::KernelSystem& kernel, Memory::MemorySystem
     std::size_t command_size = untranslated_size + header.translate_params_size;
 
     // Note: The real kernel does not check that the command length fits into the IPC buffer area.
-    ASSERT(command_size <= IPC::COMMAND_BUFFER_LENGTH);
+    R_UNLESS(command_size <= IPC::COMMAND_BUFFER_LENGTH,
+             Result(ErrCodes::CommandTooLarge, ErrorModule::OS, ErrorSummary::InvalidState,
+                    ErrorLevel::Status));
 
     std::array<u32, IPC::COMMAND_BUFFER_LENGTH> cmd_buf;
     memory.ReadBlock(*src_process, src_address, cmd_buf.data(), command_size * sizeof(u32));
@@ -55,6 +57,7 @@ Result TranslateCommandBuffer(Kernel::KernelSystem& kernel, Memory::MemorySystem
     while (i < command_size) {
         u32 descriptor = cmd_buf[i];
         i += 1;
+        R_UNLESS(i < command_size, IPC::ResultInvalidBufferDescriptor);
 
         switch (IPC::GetDescriptorType(descriptor)) {
         case IPC::DescriptorType::CopyHandle:
@@ -79,7 +82,7 @@ Result TranslateCommandBuffer(Kernel::KernelSystem& kernel, Memory::MemorySystem
                     object = src_process;
                 } else if (handle != 0) {
                     object = src_process->handle_table.GetGeneric(handle);
-                    if (descriptor == IPC::DescriptorType::MoveHandle) {
+                    if (IPC::GetDescriptorType(descriptor) == IPC::DescriptorType::MoveHandle) {
                         src_process->handle_table.Close(handle);
                     }
                 }
@@ -91,8 +94,8 @@ Result TranslateCommandBuffer(Kernel::KernelSystem& kernel, Memory::MemorySystem
                     continue;
                 }
 
-                R_ASSERT(dst_process->handle_table.Create(std::addressof(cmd_buf[i++]),
-                                                          std::move(object)));
+                R_TRY(dst_process->handle_table.Create(std::addressof(cmd_buf[i++]),
+                                                       std::move(object)));
             }
             break;
         }
@@ -103,6 +106,8 @@ Result TranslateCommandBuffer(Kernel::KernelSystem& kernel, Memory::MemorySystem
         case IPC::DescriptorType::StaticBuffer: {
             IPC::StaticBufferDescInfo bufferInfo{descriptor};
             VAddr static_buffer_src_address = cmd_buf[i];
+            R_UNLESS(memory.IsValidVirtualRange(*src_process, static_buffer_src_address,
+                                               bufferInfo.size, 1), ResultInvalidAddressState);
 
             std::vector<u8> data(bufferInfo.size);
             memory.ReadBlock(*src_process, static_buffer_src_address, data.data(), data.size());
@@ -126,8 +131,9 @@ Result TranslateCommandBuffer(Kernel::KernelSystem& kernel, Memory::MemorySystem
 
             // Note: The real kernel doesn't seem to have any error recovery mechanisms for this
             // case.
-            ASSERT_MSG(target_buffer.descriptor.size >= data.size(),
-                       "Static buffer data is too big");
+            R_UNLESS(target_buffer.descriptor.size >= data.size(), IPC::ResultInvalidBufferDescriptor);
+            R_UNLESS(memory.IsValidVirtualRange(*dst_process, target_buffer.address,
+                                               data.size(), 2), ResultInvalidAddressState);
 
             memory.WriteBlock(*dst_process, target_buffer.address, data.data(), data.size());
 
@@ -196,7 +202,9 @@ Result TranslateCommandBuffer(Kernel::KernelSystem& kernel, Memory::MemorySystem
 
             VAddr target_address = 0;
 
-            // TODO(Subv): Perform permission checks.
+            R_UNLESS(permissions != 0, IPC::ResultInvalidBufferDescriptor);
+            R_UNLESS(memory.IsValidVirtualRange(*src_process, source_address, size, permissions),
+                     ResultInvalidAddressState);
 
             // Create a buffer which contains the mapped buffer and two additional guard pages.
             std::shared_ptr<BackingMem> buffer =
@@ -235,7 +243,7 @@ Result TranslateCommandBuffer(Kernel::KernelSystem& kernel, Memory::MemorySystem
             break;
         }
         default:
-            UNIMPLEMENTED_MSG("Unsupported handle translation: {:#010X}", descriptor);
+            return IPC::ResultInvalidBufferDescriptor;
         }
     }
 

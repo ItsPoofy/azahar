@@ -273,6 +273,9 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
             PrepareReschedule();
         } else {
             ExecuteCore(*current_core_to_execute, thread, tight_loop);
+            if (status != ResultStatus::Success) {
+                return status;
+            }
         }
         Reschedule();
     } else {
@@ -306,6 +309,9 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
                 // In the rare case the break flag is set (due to exception thrown)
                 // there is probably no need to adjust the timer accordingly.
                 ExecuteCore(*cpu_core, thread, tight_loop);
+                if (status != ResultStatus::Success) {
+                    return status;
+                }
             }
             max_slice = cpu_core->GetTimer().GetTicks() - start_ticks;
             Reschedule();

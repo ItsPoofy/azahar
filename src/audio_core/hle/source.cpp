@@ -390,11 +390,7 @@ void Source::GenerateFrame() {
         }
     }
 
-    if (state.current_buffer.empty()) {
-        // TODO(SachinV): Should dequeue happen at the end of the frame generation?
-        if (DequeueBuffer()) {
-            return;
-        }
+    if (state.current_buffer.empty() && !EnsureBufferSamples()) {
         state.enabled = false;
         state.buffer_update = true;
         state.last_buffer_id = state.current_buffer_id;
@@ -404,7 +400,7 @@ void Source::GenerateFrame() {
 
     std::size_t frame_position = 0;
     while (frame_position < current_frame.size()) {
-        if (state.current_buffer.empty() && !DequeueBuffer()) {
+        if (state.current_buffer.empty() && !EnsureBufferSamples()) {
             break;
         }
 
@@ -440,6 +436,29 @@ void Source::GenerateFrame() {
     state.filters.ProcessFrame(current_frame);
 }
 
+bool Source::EnsureBufferSamples() {
+    // Applications refill compressed streaming rings behind the DSP playhead.
+    // Decode only the next hardware block so later refills are visible, retaining
+    // the predictor history from the samples actually read rather than the ring end.
+    if (state.current_buffer_is_looping && state.current_buffer_format == Format::ADPCM &&
+        state.current_sample_number < state.current_buffer_length) {
+        constexpr u32 samples_per_block = 14;
+        constexpr u32 bytes_per_block = 8;
+        const PAddr address = (state.current_buffer_physical_address & 0xFFFFFFFC) +
+                              state.current_sample_number / samples_per_block * bytes_per_block;
+        const u8* memory = memory_system->GetPhysicalPointer(address);
+        if (memory) {
+            const u32 count = std::min(samples_per_block,
+                                      state.current_buffer_length - state.current_sample_number);
+            state.current_buffer =
+                Codec::DecodeADPCM(memory, count, state.adpcm_coeffs, state.adpcm_state);
+            state.current_buffer.resize(count);
+            return true;
+        }
+    }
+    return DequeueBuffer();
+}
+
 bool Source::DequeueBuffer() {
     ASSERT_MSG(state.current_buffer.empty(),
                "Shouldn't dequeue; we still have data in current_buffer");
@@ -467,11 +486,21 @@ bool Source::DequeueBuffer() {
         case Format::PCM16:
             state.current_buffer = Codec::DecodePCM16(num_channels, memory, buf.length);
             break;
-        case Format::ADPCM:
+        case Format::ADPCM: {
             DEBUG_ASSERT(num_channels == 1);
+            // Keep static samples unchanged, but read looping rings one ADPCM
+            // block at a time. Decode a starting-position prefix to establish
+            // predictor history before discarding those samples below.
+            const u32 start = !buf.has_played ? buf.play_position : 0;
+            const u32 count = buf.is_looping ? std::min(buf.length, (start / 14 + 1) * 14)
+                                            : buf.length;
             state.current_buffer =
-                Codec::DecodeADPCM(memory, buf.length, state.adpcm_coeffs, state.adpcm_state);
+                Codec::DecodeADPCM(memory, count, state.adpcm_coeffs, state.adpcm_state);
+            if (buf.is_looping) {
+                state.current_buffer.resize(count);
+            }
             break;
+        }
         default:
             UNIMPLEMENTED();
             break;

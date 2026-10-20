@@ -169,6 +169,9 @@ public:
     /// Changes the permissions of a range of addresses, splitting VMAs as necessary.
     Result ReprotectRange(VAddr target, u32 size, VMAPermission new_perms);
 
+    /// Rebuilds page-table mappings after a process-wide MMU policy change.
+    void RefreshMemoryMappings();
+
     /// Dumps the address space layout to the log, for debugging
     void LogLayout(Common::Log::Level log_level) const;
 

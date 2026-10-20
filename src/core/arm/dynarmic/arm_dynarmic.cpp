@@ -5,10 +5,8 @@
 #include <csignal>
 #include <cstring>
 #include <dynarmic/interface/A32/a32.h>
-#include <dynarmic/interface/A32/arch_version.h>
 #include <dynarmic/interface/optimization_flags.h>
 #include "common/assert.h"
-#include "common/logging/log.h"
 #include "common/microprofile.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
 #include "core/arm/dynarmic/arm_dynarmic_cp15.h"
@@ -40,13 +38,8 @@ public:
     ~DynarmicUserCallbacks() = default;
 
     std::optional<std::uint32_t> MemoryReadCode(VAddr vaddr) override {
-        if (parent.system.IsCodeDirty(vaddr)) {
-            LOG_CRITICAL(Core_ARM11,
-                         "STALE I-CACHE EXECUTION DETECTED at PC 0x{:08X}! Instruction fetched from "
-                         "memory modified without calling svcInvalidateInstructionCacheRange (0x93). "
-                         "This causes a Prefetch Abort on real 3DS hardware!",
-                         vaddr);
-            Core::LogException(parent.system, Core::ExceptionType::PrefetchAbort);
+        if (!memory.IsExecutable(vaddr)) {
+            return std::nullopt;
         }
         return memory.Read32OrNullopt(vaddr);
     }
@@ -61,12 +54,6 @@ public:
         return memory.Read32(vaddr);
     }
     std::uint64_t MemoryRead64(VAddr vaddr) override {
-        if ((vaddr & 0x3) != 0) {
-            LOG_CRITICAL(HW_Memory,
-                         "Data Abort (Alignment Fault): unaligned 64-bit read at 0x{:08X} at PC 0x{:08X}",
-                         vaddr, parent.GetPC());
-            Core::LogException(parent.system, Core::ExceptionType::DataAbort);
-        }
         return memory.Read64(vaddr);
     }
 
@@ -80,12 +67,6 @@ public:
         memory.Write32(vaddr, value);
     }
     void MemoryWrite64(VAddr vaddr, std::uint64_t value) override {
-        if ((vaddr & 0x3) != 0) {
-            LOG_CRITICAL(HW_Memory,
-                         "Data Abort (Alignment Fault): unaligned 64-bit write at 0x{:08X} at PC 0x{:08X}",
-                         vaddr, parent.GetPC());
-            Core::LogException(parent.system, Core::ExceptionType::DataAbort);
-        }
         memory.Write64(vaddr, value);
     }
 
@@ -389,15 +370,6 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     }
     config.coprocessors[15] = std::make_shared<DynarmicCP15>(cp15_state);
     config.define_unpredictable_behaviour = true;
-
-    // Strict ARMv6K architecture (real 3DS ARM1176JZF-S)
-    config.arch_version = Dynarmic::A32::ArchVersion::v6K;
-
-    // Accurate fault handling: halt on memory fault
-    config.check_halt_on_memory_access = true;
-
-    // Detect misaligned 64-bit accesses (LDRD/STRD)
-    config.detect_misaligned_access_via_page_table = 64;
 
     // Multi-process state
     config.processor_id = GetID();

@@ -168,11 +168,20 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(u32* cmd_buf, const Funct
     result.push_back('}');
 
     LOG_ERROR(Service, "unknown / unimplemented {}", result);
-    // TODO(bunnei): Hack - ignore error
     header.normal_params_size.Assign(1);
     header.translate_params_size.Assign(0);
     cmd_buf[0] = header.raw;
-    cmd_buf[1] = 0;
+    if (info == nullptr) {
+        // Nintendo's IPC dispatchers reject command IDs absent from their command table.
+        cmd_buf[1] = Result(47, ErrorModule::OS, ErrorSummary::WrongArgument,
+                            ErrorLevel::Permanent).raw;
+    } else {
+        // A registered command with no HLE implementation is an emulator limitation.
+        // Do not report a successful operation without performing it.
+        cmd_buf[1] = UnimplementedFunction(ErrorModule::OS).raw;
+        LOG_CRITICAL(Service, "Missing firmware service implementation: {}::{}",
+                     service_name, info->name);
+    }
 }
 
 void ServiceFrameworkBase::HandleSyncRequest(Kernel::HLERequestContext& context) {

@@ -2173,6 +2173,10 @@ void Shutdown() {
 
     RemoveAllBreakpoints();
 
+    // Releasing a debugger session must also release its scheduler suspension.
+    continue_thread = -1;
+    Continue();
+
     LOG_INFO(Debug_GDBStub, "Stopping GDB ...");
 
     StopReaderThread();

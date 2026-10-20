@@ -18,6 +18,7 @@
 #include "core/arm/dyncom/arm_dyncom_run.h"
 #include "core/arm/dyncom/arm_dyncom_thumb.h"
 #include "core/arm/dyncom/arm_dyncom_trans.h"
+#include "core/arm/exception_handler.h"
 #include "core/arm/skyeye_common/armstate.h"
 #include "core/arm/skyeye_common/armsupp.h"
 #include "core/arm/skyeye_common/vfp/vfp.h"
@@ -1644,6 +1645,14 @@ DISPATCH: {
         cpu->Reg[15] &= 0xfffffffe;
     else
         cpu->Reg[15] &= 0xfffffffc;
+
+    // Check even cached blocks: changing a mapping can revoke execute access.
+    // Blocks end at page boundaries, so this also covers sequential fetches.
+    if (!cpu->memory.IsExecutable(cpu->Reg[15])) {
+        SAVE_NZCVT;
+        Core::LogException(cpu->system, Core::ExceptionType::PrefetchAbort);
+        goto END;
+    }
 
     // Find the cached instruction cream, otherwise translate it...
     auto itr = cpu->instruction_cache.find(cpu->Reg[15]);

@@ -92,7 +92,7 @@ Result ServerSession::HandleSyncRequest(std::shared_ptr<Thread> thread) {
 
         auto context =
             std::make_shared<Kernel::HLERequestContext>(kernel, SharedFrom(this), thread);
-        context->PopulateFromIncomingCommandBuffer(cmd_buf.data(), current_process);
+        R_TRY(context->PopulateFromIncomingCommandBuffer(cmd_buf.data(), current_process));
 
         hle_handler->HandleSyncRequest(*context);
 
@@ -102,7 +102,7 @@ Result ServerSession::HandleSyncRequest(std::shared_ptr<Thread> thread) {
         // put the thread to sleep then the writing of the command buffer will be deferred to the
         // wakeup callback.
         if (thread->status == Kernel::ThreadStatus::Running) {
-            context->WriteToOutgoingCommandBuffer(cmd_buf.data(), *current_process);
+            R_TRY(context->WriteToOutgoingCommandBuffer(cmd_buf.data(), *current_process));
             kernel.memory.WriteBlock(*current_process, thread->GetCommandBufferAddress(),
                                      cmd_buf.data(), cmd_buf.size() * sizeof(u32));
         }

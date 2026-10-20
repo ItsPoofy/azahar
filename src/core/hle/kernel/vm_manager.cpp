@@ -124,8 +124,7 @@ ResultVal<VMManager::VMAHandle> VMManager::MapBackingMemory(VAddr target, Memory
     ASSERT(final_vma.size == size);
 
     final_vma.type = VMAType::BackingMemory;
-    final_vma.permissions =
-        process.force_rwx_pages ? VMAPermission::ReadWriteExecute : VMAPermission::ReadWrite;
+    final_vma.permissions = VMAPermission::ReadWrite;
     final_vma.meminfo_state = state;
     final_vma.backing_memory = memory;
     UpdatePageTableForVMA(final_vma);
@@ -164,8 +163,7 @@ Result VMManager::ChangeMemoryState(VAddr target, u32 size, MemoryState expected
     // The comparison against the end of the range must be done using addresses since VMAs can be
     // merged during this process, causing invalidation of the iterators.
     while (vma != end && vma->second.base < target_end) {
-        vma->second.permissions =
-            process.force_rwx_pages ? VMAPermission::ReadWriteExecute : new_perms;
+        vma->second.permissions = new_perms;
         vma->second.meminfo_state = new_state;
         UpdatePageTableForVMA(vma->second);
         vma = std::next(MergeAdjacent(vma));
@@ -211,7 +209,7 @@ VMManager::VMAHandle VMManager::Reprotect(VMAHandle vma_handle, VMAPermission ne
     VMAIter iter = StripIterConstness(vma_handle);
 
     VirtualMemoryArea& vma = iter->second;
-    vma.permissions = process.force_rwx_pages ? VMAPermission::ReadWriteExecute : new_perms;
+    vma.permissions = new_perms;
     UpdatePageTableForVMA(vma);
 
     return MergeAdjacent(iter);
@@ -231,6 +229,14 @@ Result VMManager::ReprotectRange(VAddr target, u32 size, VMAPermission new_perms
     }
 
     return ResultSuccess;
+}
+
+void VMManager::RefreshMemoryMappings() {
+    for (const auto& [base, vma] : vma_map) {
+        if (vma.type != VMAType::Free) {
+            UpdatePageTableForVMA(vma);
+        }
+    }
 }
 
 void VMManager::LogLayout(Common::Log::Level log_level) const {
@@ -365,18 +371,17 @@ VMManager::VMAIter VMManager::MergeAdjacent(VMAIter iter) {
 }
 
 void VMManager::UpdatePageTableForVMA(const VirtualMemoryArea& vma) {
+    // Compiled blocks must not retain permission to execute after a remap or reprotect.
+    auto& system = Core::System::GetInstance();
+    if (system.IsPoweredOn()) {
+        system.InvalidateCacheRange(vma.base, vma.size);
+    }
     switch (vma.type) {
     case VMAType::Free:
         memory.UnmapRegion(*page_table, vma.base, vma.size);
         break;
     case VMAType::BackingMemory:
-        if (static_cast<u8>(vma.permissions) & static_cast<u8>(VMAPermission::Execute)) {
-            memory.MapCodeRegion(*page_table, vma.base, vma.size, vma.backing_memory);
-        } else if ((static_cast<u8>(vma.permissions) & static_cast<u8>(VMAPermission::Write)) == 0) {
-            memory.MapReadOnlyRegion(*page_table, vma.base, vma.size, vma.backing_memory);
-        } else {
-            memory.MapMemoryRegion(*page_table, vma.base, vma.size, vma.backing_memory);
-        }
+        memory.MapMemoryRegion(*page_table, vma.base, vma.size, vma.backing_memory);
         break;
     }
 

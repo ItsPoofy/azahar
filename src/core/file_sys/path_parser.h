@@ -5,6 +5,7 @@
 #pragma once
 
 #include <string>
+#include <limits>
 #include <vector>
 #include "core/file_sys/archive_backend.h"
 
@@ -17,7 +18,9 @@ namespace FileSys {
  */
 class PathParser {
 public:
-    explicit PathParser(const Path& path);
+    explicit PathParser(const Path& path,
+                        std::size_t max_component_length = std::numeric_limits<std::size_t>::max(),
+                        std::size_t max_path_length = std::numeric_limits<std::size_t>::max());
 
     /**
      * Checks if the Path is valid.

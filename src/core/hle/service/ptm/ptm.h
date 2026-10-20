@@ -13,7 +13,22 @@ namespace Core {
 class System;
 }
 
+namespace Kernel {
+class Event;
+}
+
 namespace Service::PTM {
+
+struct AlarmSessionData : Kernel::SessionRequestHandler::SessionDataBase {
+    std::shared_ptr<Kernel::Event> event;
+private:
+    template <class Archive>
+    void serialize(Archive& ar, const unsigned int) {
+        ar& boost::serialization::base_object<Kernel::SessionRequestHandler::SessionDataBase>(*this);
+        ar & event;
+    }
+    friend class boost::serialization::access;
+};
 
 /// Id of the SharedExtData archive used by the PTM process
 constexpr std::array<u8, 12> ptm_shared_extdata_id = {0, 0, 0, 0, 0x0B, 0, 0, 0xF0, 0, 0, 0, 0};
@@ -53,11 +68,12 @@ public:
     static u16 GetPlayCoins();
     static void SetPlayCoins(u16 play_coins);
 
-    class Interface : public ServiceFramework<Interface> {
+    class Interface : public ServiceFramework<Interface, AlarmSessionData> {
     public:
         Interface(std::shared_ptr<Module> ptm, const char* name, u32 max_session);
 
     protected:
+        void RegisterAlarmClient(Kernel::HLERequestContext& ctx);
         /**
          * It is unknown if GetAdapterState is the same as GetBatteryChargeState,
          * it is likely to just be a duplicate function of GetBatteryChargeState
@@ -174,4 +190,5 @@ void InstallInterfaces(Core::System& system);
 } // namespace Service::PTM
 
 BOOST_CLASS_EXPORT_KEY(Service::PTM::Module)
+BOOST_CLASS_EXPORT_KEY(Service::PTM::AlarmSessionData)
 SERVICE_CONSTRUCT(Service::PTM::Module)

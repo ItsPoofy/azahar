@@ -112,7 +112,7 @@ public:
                                                      u32 attributes) override {
         LOG_DEBUG(Service_FS, "called path={} mode={:01X}", path.DebugStr(), mode.hex);
 
-        const PathParser path_parser(path);
+        const PathParser path_parser(path, 16, GetMaxPathLength());
 
         if (!path_parser.IsValid()) {
             LOG_ERROR(Service_FS, "Invalid path {}", path.DebugStr());
@@ -164,6 +164,9 @@ public:
     }
 
 private:
+    std::size_t GetMaxPathLength() const override {
+        return 248;
+    }
     ExtSaveDataArchive() = default;
     template <class Archive>
     void serialize(Archive& ar, const unsigned int) {

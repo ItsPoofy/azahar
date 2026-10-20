@@ -71,6 +71,59 @@ TEST_CASE("Memory Basics", "[kernel][memory]") {
         REQUIRE(code == ResultSuccess);
     }
 
+    SECTION("Luma ForceRWX preserves backing memory and VMA permissions") {
+        auto manager = std::make_unique<Kernel::VMManager>(memory, process);
+        auto result =
+            manager->MapBackingMemory(Memory::HEAP_VADDR, block,
+                                      static_cast<u32>(block.GetSize()),
+                                      Kernel::MemoryState::Private);
+        REQUIRE(result.Code() == ResultSuccess);
+        manager->Reprotect(result.Unwrap(), Kernel::VMAPermission::ReadWrite);
+
+        const auto page = Memory::HEAP_VADDR >> Memory::CITRA_PAGE_BITS;
+        CHECK(manager->page_table->attributes[page] == Memory::PageType::Memory);
+
+        process.force_rwx_pages = true;
+        manager->RefreshMemoryMappings();
+
+        const auto vma = manager->FindVMA(Memory::HEAP_VADDR);
+        REQUIRE(vma != manager->vma_map.end());
+        CHECK(vma->second.permissions == Kernel::VMAPermission::ReadWrite);
+        CHECK(manager->page_table->pointers.Ref(page).GetPtr() == block.GetPtr());
+        CHECK(manager->page_table->attributes[page] == Memory::PageType::Memory);
+
+        auto later_result = manager->MapBackingMemory(Memory::HEAP_VADDR + Memory::CITRA_PAGE_SIZE,
+                                                      block, static_cast<u32>(block.GetSize()),
+                                                      Kernel::MemoryState::Private);
+        REQUIRE(later_result.Code() == ResultSuccess);
+        const auto later_page = page + 1;
+        CHECK(manager->page_table->attributes[later_page] == Memory::PageType::Memory);
+
+        CHECK(manager->page_table->pointers.Ref(later_page).GetPtr() == block.GetPtr());
+
+        process.force_rwx_pages = false;
+        manager->RefreshMemoryMappings();
+        CHECK(manager->page_table->attributes[page] == Memory::PageType::Memory);
+        CHECK(manager->page_table->attributes[later_page] == Memory::PageType::Memory);
+
+        manager->Reprotect(manager->FindVMA(Memory::HEAP_VADDR), Kernel::VMAPermission::Read);
+        CHECK(manager->page_table->attributes[page] == Memory::PageType::Memory);
+
+        CHECK(manager->FindVMA(Memory::HEAP_VADDR)->second.permissions ==
+              Kernel::VMAPermission::Read);
+        process.force_rwx_pages = true;
+        manager->RefreshMemoryMappings();
+        CHECK(manager->page_table->attributes[page] == Memory::PageType::Memory);
+        CHECK(manager->FindVMA(Memory::HEAP_VADDR)->second.permissions ==
+              Kernel::VMAPermission::Read);
+
+        manager->Reprotect(manager->FindVMA(Memory::HEAP_VADDR),
+                           Kernel::VMAPermission::ReadExecute);
+        CHECK(manager->page_table->attributes[page] == Memory::PageType::Memory);
+        CHECK(manager->FindVMA(Memory::HEAP_VADDR)->second.permissions ==
+              Kernel::VMAPermission::ReadExecute);
+    }
+
     SECTION("changing memory state") {
         // Because of the PageTable, Kernel::VMManager is too big to be created on the stack.
         auto manager = std::make_unique<Kernel::VMManager>(memory, process);

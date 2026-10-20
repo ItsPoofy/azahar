@@ -291,11 +291,12 @@ private:
             } else {
                 Result r = (context.*svc)(u...);
                 if (r.IsError()) {
+                    const u32 caller_pc = context.GetCallingPC();
                     LOG_ERROR(
                         Kernel_SVC,
-                        "svc=0x{:02X} raw=0x{:08X} level={} summary={} module={} description={}",
+                        "svc=0x{:02X} failed with error 0x{:08X} (level={} summary={} module={} desc={}) at PC 0x{:08X}",
                         id, r.raw, r.level.ExtractValue(r.raw), r.summary.ExtractValue(r.raw),
-                        r.module.ExtractValue(r.raw), r.description.ExtractValue(r.raw));
+                        r.module.ExtractValue(r.raw), r.description.ExtractValue(r.raw), caller_pc);
                 }
                 SetParam<INDEX_RETURN, Result, Result, Us...>(context, r);
             }

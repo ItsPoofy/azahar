@@ -50,7 +50,11 @@ public:
         Memory::MemorySystem& memory = context->kernel.memory;
         memory.ReadBlock(*process, thread->GetCommandBufferAddress(), cmd_buff.data(),
                          cmd_buff.size() * sizeof(u32));
-        context->WriteToOutgoingCommandBuffer(cmd_buff.data(), *process);
+        const auto result = context->WriteToOutgoingCommandBuffer(cmd_buff.data(), *process);
+        if (result.IsError()) {
+            thread->SetWaitSynchronizationResult(result);
+            return;
+        }
         // Copy the translated command buffer back into the thread's command buffer area.
         memory.WriteBlock(*process, thread->GetCommandBufferAddress(), cmd_buff.data(),
                           cmd_buff.size() * sizeof(u32));
@@ -164,7 +168,9 @@ Result HLERequestContext::PopulateFromIncomingCommandBuffer(const u32_le* src_cm
 
     std::size_t untranslated_size = 1u + header.normal_params_size;
     std::size_t command_size = untranslated_size + header.translate_params_size;
-    ASSERT(command_size <= IPC::COMMAND_BUFFER_LENGTH); // TODO(yuriks): Return error
+    R_UNLESS(command_size <= IPC::COMMAND_BUFFER_LENGTH,
+             Result(ErrCodes::CommandTooLarge, ErrorModule::OS, ErrorSummary::InvalidState,
+                    ErrorLevel::Status));
 
     std::copy_n(src_cmdbuf, untranslated_size, cmd_buf.begin());
 
@@ -179,19 +185,25 @@ Result HLERequestContext::PopulateFromIncomingCommandBuffer(const u32_le* src_cm
     while (i < command_size) {
         u32 descriptor = cmd_buf[i] = src_cmdbuf[i];
         i += 1;
+        R_UNLESS(i < command_size, IPC::ResultInvalidBufferDescriptor);
 
         switch (IPC::GetDescriptorType(descriptor)) {
         case IPC::DescriptorType::CopyHandle:
         case IPC::DescriptorType::MoveHandle: {
             u32 num_handles = IPC::HandleNumberFromDesc(descriptor);
-            ASSERT(i + num_handles <= command_size); // TODO(yuriks): Return error
+            R_UNLESS(num_handles <= command_size - i,
+                     Result(ErrCodes::CommandTooLarge, ErrorModule::OS,
+                            ErrorSummary::InvalidState, ErrorLevel::Status));
             for (u32 j = 0; j < num_handles; ++j) {
                 Handle handle = src_cmdbuf[i];
                 std::shared_ptr<Object> object = nullptr;
-                if (handle != 0) {
+                if (handle == CurrentProcess) {
+                    object = src_process_;
+                } else if (handle == CurrentThread) {
+                    object = thread;
+                } else if (handle != 0) {
                     object = src_process.handle_table.GetGeneric(handle);
-                    ASSERT(object != nullptr); // TODO(yuriks): Return error
-                    if (descriptor == IPC::DescriptorType::MoveHandle) {
+                    if (IPC::GetDescriptorType(descriptor) == IPC::DescriptorType::MoveHandle) {
                         src_process.handle_table.Close(handle);
                     }
                 }
@@ -207,6 +219,8 @@ Result HLERequestContext::PopulateFromIncomingCommandBuffer(const u32_le* src_cm
         case IPC::DescriptorType::StaticBuffer: {
             VAddr source_address = src_cmdbuf[i];
             IPC::StaticBufferDescInfo buffer_info{descriptor};
+            R_UNLESS(kernel.memory.IsValidVirtualRange(src_process, source_address,
+                                                       buffer_info.size, 1), ResultInvalidAddressState);
 
             // Copy the input buffer into our own vector and store it.
             std::vector<u8> data(buffer_info.size);
@@ -217,6 +231,11 @@ Result HLERequestContext::PopulateFromIncomingCommandBuffer(const u32_le* src_cm
             break;
         }
         case IPC::DescriptorType::MappedBuffer: {
+            IPC::MappedBufferDescInfo buffer_info{descriptor};
+            R_UNLESS(buffer_info.perms != 0, IPC::ResultInvalidBufferDescriptor);
+            R_UNLESS(kernel.memory.IsValidVirtualRange(src_process, src_cmdbuf[i],
+                                                       buffer_info.size, buffer_info.perms),
+                     ResultInvalidAddressState);
             u32 next_id = static_cast<u32>(request_mapped_buffers.size());
             request_mapped_buffers.emplace_back(kernel.memory, src_process_, descriptor,
                                                 src_cmdbuf[i], next_id);
@@ -224,7 +243,7 @@ Result HLERequestContext::PopulateFromIncomingCommandBuffer(const u32_le* src_cm
             break;
         }
         default:
-            UNIMPLEMENTED_MSG("Unsupported handle translation: {:#010X}", descriptor);
+            return IPC::ResultInvalidBufferDescriptor;
         }
     }
 
@@ -243,7 +262,9 @@ Result HLERequestContext::WriteToOutgoingCommandBuffer(u32_le* dst_cmdbuf,
 
     std::size_t untranslated_size = 1u + header.normal_params_size;
     std::size_t command_size = untranslated_size + header.translate_params_size;
-    ASSERT(command_size <= IPC::COMMAND_BUFFER_LENGTH);
+    R_UNLESS(command_size <= IPC::COMMAND_BUFFER_LENGTH,
+             Result(ErrCodes::CommandTooLarge, ErrorModule::OS, ErrorSummary::InvalidState,
+                    ErrorLevel::Status));
 
     std::copy_n(cmd_buf.begin(), untranslated_size, dst_cmdbuf);
 
@@ -258,19 +279,20 @@ Result HLERequestContext::WriteToOutgoingCommandBuffer(u32_le* dst_cmdbuf,
     while (i < command_size) {
         u32 descriptor = dst_cmdbuf[i] = cmd_buf[i];
         i += 1;
+        R_UNLESS(i < command_size, IPC::ResultInvalidBufferDescriptor);
 
         switch (IPC::GetDescriptorType(descriptor)) {
         case IPC::DescriptorType::CopyHandle:
         case IPC::DescriptorType::MoveHandle: {
             // HLE services don't use handles, so we treat both CopyHandle and MoveHandle equally
             u32 num_handles = IPC::HandleNumberFromDesc(descriptor);
-            ASSERT(i + num_handles <= command_size);
+            R_UNLESS(num_handles <= command_size - i, IPC::ResultInvalidBufferDescriptor);
             for (u32 j = 0; j < num_handles; ++j) {
+                R_UNLESS(cmd_buf[i] < request_handles.size(), IPC::ResultInvalidBufferDescriptor);
                 std::shared_ptr<Object> object = GetIncomingHandle(cmd_buf[i]);
                 Handle handle = 0;
                 if (object != nullptr) {
-                    // TODO(yuriks): Figure out the proper error handling for if this fails
-                    R_ASSERT(dst_process.handle_table.Create(std::addressof(handle), object));
+                    R_TRY(dst_process.handle_table.Create(std::addressof(handle), object));
                 }
                 dst_cmdbuf[i++] = handle;
             }
@@ -289,7 +311,9 @@ Result HLERequestContext::WriteToOutgoingCommandBuffer(u32_le* dst_cmdbuf,
             IPC::StaticBufferDescInfo target_descriptor{dst_cmdbuf[static_buffer_offset]};
             VAddr target_address = dst_cmdbuf[static_buffer_offset + 1];
 
-            ASSERT_MSG(target_descriptor.size >= data.size(), "Static buffer data is too big");
+            R_UNLESS(target_descriptor.size >= data.size(), IPC::ResultInvalidBufferDescriptor);
+            R_UNLESS(kernel.memory.IsValidVirtualRange(dst_process, target_address, data.size(), 2),
+                     ResultInvalidAddressState);
 
             kernel.memory.WriteBlock(dst_process, target_address, data.data(), data.size());
 
@@ -297,12 +321,13 @@ Result HLERequestContext::WriteToOutgoingCommandBuffer(u32_le* dst_cmdbuf,
             break;
         }
         case IPC::DescriptorType::MappedBuffer: {
+            R_UNLESS(cmd_buf[i] < request_mapped_buffers.size(), IPC::ResultInvalidBufferDescriptor);
             VAddr addr = request_mapped_buffers[cmd_buf[i]].address;
             dst_cmdbuf[i++] = addr;
             break;
         }
         default:
-            UNIMPLEMENTED_MSG("Unsupported handle translation: {:#010X}", descriptor);
+            return IPC::ResultInvalidBufferDescriptor;
         }
     }
 

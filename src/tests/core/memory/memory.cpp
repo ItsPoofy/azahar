@@ -53,3 +53,25 @@ TEST_CASE("memory.IsValidVirtualAddress", "[core][memory]") {
         CHECK(memory.IsValidVirtualAddress(*process, Memory::CONFIG_MEMORY_VADDR) == false);
     }
 }
+
+TEST_CASE("Guest buffer ranges and Luma permissions", "[core][memory][accuracy]") {
+    Core::Timing timing(1, 100);
+    Core::System system;
+    Memory::MemorySystem memory{system};
+    Kernel::KernelSystem kernel(memory, timing, [] {}, Kernel::MemoryMode::NewProd, 1);
+    auto process = kernel.CreateProcess(kernel.CreateCodeSet("", 0));
+    auto backing = std::make_shared<BufferMem>(0x2000);
+    REQUIRE(process->vm_manager.MapBackingMemory(0x10000000, MemoryRef(backing), 0x2000,
+                                                Kernel::MemoryState::Private).Succeeded());
+    CHECK(memory.IsValidVirtualRange(*process, 0x10000fff, 2, 3));
+    CHECK_FALSE(memory.IsValidVirtualRange(*process, 0x10001fff, 2, 1));
+    CHECK_FALSE(memory.IsValidVirtualRange(*process, 0xfffffff0, 0x40, 1));
+    CHECK(memory.IsValidVirtualRange(*process, 0, 0));
+    REQUIRE(process->vm_manager.ReprotectRange(0x10001000, 0x1000, Kernel::VMAPermission::Read)
+                == ResultSuccess);
+    CHECK(memory.IsValidVirtualRange(*process, 0x10000fff, 2, 1));
+    CHECK_FALSE(memory.IsValidVirtualRange(*process, 0x10000fff, 2, 2));
+    process->force_rwx_pages = true;
+    CHECK(memory.IsValidVirtualRange(*process, 0x10000fff, 2, 2));
+    CHECK_FALSE(memory.IsValidVirtualRange(*process, 0x10001fff, 2, 2));
+}

@@ -50,11 +50,6 @@ enum class PageType : u8 {
     /// Page is mapped to regular memory, but also needs to check for rasterizer cache flushing and
     /// invalidation. Furthermore a debug watchpoint is set to an address within the page.
     RasterizerCachedMemoryWatchpoint,
-    /// Page is mapped to read-only memory. Writes trigger a Data Abort.
-    ReadOnly,
-    /// Page is mapped to executable code. Writes trigger a Data Abort without ForceRWXPages,
-    /// and are tracked as dirty code when ForceRWXPages is enabled.
-    Code,
 };
 
 /**
@@ -95,17 +90,8 @@ struct PageTable {
             return Entry(*this, static_cast<VAddr>(idx));
         }
 
-        const MemoryRef& Ref(std::size_t idx) const {
+        const MemoryRef& Ref(std::size_t idx) {
             return refs[idx];
-        }
-
-        MemoryRef& Ref(std::size_t idx) {
-            return refs[idx];
-        }
-
-        void SetRefOnly(std::size_t idx, MemoryRef value) {
-            refs[idx] = std::move(value);
-            raw[idx] = nullptr;
         }
 
     private:
@@ -292,8 +278,6 @@ public:
      * @param target Buffer with the memory backing the mapping. Must be of length at least `size`.
      */
     void MapMemoryRegion(PageTable& page_table, VAddr base, u32 size, MemoryRef target);
-    void MapCodeRegion(PageTable& page_table, VAddr base, u32 size, MemoryRef target);
-    void MapReadOnlyRegion(PageTable& page_table, VAddr base, u32 size, MemoryRef target);
 
     void UnmapRegion(PageTable& page_table, VAddr base, u32 size);
 
@@ -415,6 +399,9 @@ public:
      * @returns the read 32-bit unsigned value or std::nullopt.
      */
     std::optional<u32> Read32OrNullopt(VAddr addr);
+
+    /// Effective instruction-fetch permission, including Luma's persistent MMU override.
+    bool IsExecutable(VAddr addr) const;
 
     /**
      * Reads a 32-bit unsigned value from the process' address space
@@ -687,6 +674,9 @@ public:
 
     /// Determines if the given VAddr is valid for the specified process.
     bool IsValidVirtualAddress(const Kernel::Process& process, VAddr vaddr);
+    /// Checks every VMA in a guest buffer without overflowing its address range.
+    bool IsValidVirtualRange(const Kernel::Process& process, VAddr address, std::size_t size,
+                             u32 permissions = 0) const;
 
     /// Returns true if the address refers to a valid memory region
     bool IsValidPhysicalAddress(PAddr paddr);

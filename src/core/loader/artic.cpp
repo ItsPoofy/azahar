@@ -261,7 +261,9 @@ ResultStatus Apploader_Artic::LoadExecImpl(std::shared_ptr<Kernel::Process>& pro
     }
     fs_user->RegisterProductInfo(process->process_id, product_info);
 
-    process->Run(priority, stack_size);
+    if (!process->Run(priority, stack_size)) {
+        return ResultStatus::ErrorMemoryAllocationFailed;
+    }
     return ResultStatus::Success;
 }
 

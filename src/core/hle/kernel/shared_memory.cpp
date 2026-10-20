@@ -44,7 +44,6 @@ ResultVal<std::shared_ptr<SharedMemory>> KernelSystem::CreateSharedMemory(
 
     auto memory_region = GetMemoryRegion(region);
     auto shared_memory = std::make_shared<SharedMemory>(*this);
-    shared_memory->owner_process = owner_process;
     shared_memory->name = std::move(name);
     shared_memory->size = size;
     shared_memory->memory_region = memory_region;
@@ -56,7 +55,7 @@ ResultVal<std::shared_ptr<SharedMemory>> KernelSystem::CreateSharedMemory(
         // We'll manually allocate some memory from the linear heap in the specified region.
         auto offset = memory_region->LinearAllocate(size);
 
-        ASSERT_MSG(offset, "Not enough space in region to allocate shared memory!");
+        R_UNLESS(offset, ResultOutOfMemory);
 
         std::fill(memory.GetFCRAMPointer(*offset), memory.GetFCRAMPointer(*offset + size), 0);
         shared_memory->backing_blocks = {{memory.GetFCRAMRef(*offset), size}};
@@ -81,6 +80,7 @@ ResultVal<std::shared_ptr<SharedMemory>> KernelSystem::CreateSharedMemory(
     }
 
     shared_memory->base_address = address;
+    shared_memory->owner_process = owner_process;
     return shared_memory;
 }
 

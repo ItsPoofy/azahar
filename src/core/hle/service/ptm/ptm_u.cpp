@@ -12,7 +12,7 @@ namespace Service::PTM {
 PTM_U::PTM_U(std::shared_ptr<Module> ptm) : Module::Interface(std::move(ptm), "ptm:u", 26) {
     static const FunctionInfo functions[] = {
         // clang-format off
-        {0x0001, nullptr, "RegisterAlarmClient"},
+        {0x0001, &PTM_U::RegisterAlarmClient, "RegisterAlarmClient"},
         {0x0002, nullptr, "SetRtcAlarm"},
         {0x0003, nullptr, "GetRtcAlarm"},
         {0x0004, nullptr, "CancelRtcAlarm"},

@@ -302,7 +302,9 @@ ResultStatus AppLoader_THREEDSX::Load(std::shared_ptr<Kernel::Process>& process)
     auto fs_user = system.ServiceManager().GetService<Service::FS::FS_USER>("fs:USER");
     fs_user->RegisterProgramInfo(process->GetObjectId(), process->codeset->program_id, filepath);
 
-    process->Run(48, Kernel::DEFAULT_STACK_SIZE);
+    if (!process->Run(48, Kernel::DEFAULT_STACK_SIZE)) {
+        return ResultStatus::ErrorMemoryAllocationFailed;
+    }
 
     system.ArchiveManager().RegisterSelfNCCH(*this);
 

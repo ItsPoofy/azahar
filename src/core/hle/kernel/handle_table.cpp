@@ -37,7 +37,7 @@ Result HandleTable::Create(Handle* out_handle, std::shared_ptr<Object> obj) {
     DEBUG_ASSERT(obj != nullptr);
 
     u16 slot = next_free_slot;
-    R_UNLESS(slot < generations.size(), ResultOutOfHandles);
+    R_UNLESS(slot < max_count, ResultOutOfHandles);
     next_free_slot = generations[slot];
 
     u16 generation = next_generation++;
@@ -75,7 +75,7 @@ Result HandleTable::Close(Handle handle) {
 bool HandleTable::IsValid(Handle handle) const {
     const u16 slot = GetSlot(handle);
     const u16 generation = GetGeneration(handle);
-    return slot < MAX_COUNT && objects[slot] != nullptr && generations[slot] == generation;
+    return slot < max_count && objects[slot] != nullptr && generations[slot] == generation;
 }
 
 std::shared_ptr<Object> HandleTable::GetGeneric(Handle handle) const {
@@ -89,6 +89,58 @@ std::shared_ptr<Object> HandleTable::GetGeneric(Handle handle) const {
         return nullptr;
     }
     return objects[GetSlot(handle)];
+}
+
+std::vector<Handle> HandleTable::GetHandles(u32 type_token) const {
+    const auto luma_token = [](HandleType type) -> u32 {
+        switch (type) {
+        case HandleType::Event:
+            return 0x1F;
+        case HandleType::Semaphore:
+            return 0x2F;
+        case HandleType::Timer:
+            return 0x35;
+        case HandleType::Mutex:
+            return 0x39;
+        case HandleType::ServerPort:
+            return 0x55;
+        case HandleType::ClientPort:
+            return 0x65;
+        case HandleType::CodeSet:
+            return 0x68;
+        case HandleType::Thread:
+            return 0x8D;
+        case HandleType::ServerSession:
+            return 0x95;
+        case HandleType::AddressArbiter:
+            return 0x98;
+        case HandleType::ClientSession:
+            return 0xA5;
+        case HandleType::SharedMemory:
+            return 0xB0;
+        case HandleType::Process:
+            return 0xC5;
+        case HandleType::ResourceLimit:
+            return 0xC8;
+        default:
+            return 0;
+        }
+    };
+
+    std::vector<Handle> handles;
+    for (u32 slot = 0; slot < max_count; ++slot) {
+        if (!objects[slot] || (type_token != 0 && luma_token(objects[slot]->GetHandleType()) != type_token)) {
+            continue;
+        }
+        handles.push_back(generations[slot] | (slot << 15));
+    }
+    return handles;
+}
+
+void HandleTable::SetMaxCount(std::size_t count) {
+    ASSERT(count <= MAX_COUNT);
+    // A zero ExHeader size selects Kernel11's embedded table; it does not disable handles.
+    max_count = count == 0 ? INTERNAL_COUNT : count;
 }
 
 void HandleTable::Clear() {

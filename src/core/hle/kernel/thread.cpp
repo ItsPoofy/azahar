@@ -413,9 +413,6 @@ ResultVal<std::shared_ptr<Thread>> KernelSystem::CreateThread(
 
     auto thread = std::make_shared<Thread>(*this, processor_id);
 
-    thread_managers[processor_id]->thread_list.push_back(thread);
-    thread_managers[processor_id]->ready_queue.prepare(priority);
-
     thread->thread_id = NewThreadId();
     thread->status = ThreadStatus::Dormant;
     thread->entry_point = entry_point;
@@ -426,10 +423,12 @@ ResultVal<std::shared_ptr<Thread>> KernelSystem::CreateThread(
     thread->wait_objects.clear();
     thread->wait_address = 0;
     thread->name = std::move(name);
-    thread_managers[processor_id]->wakeup_callback_table[thread->thread_id] = thread.get();
     thread->owner_process = owner_process;
     thread->resource_limit_category = owner_process->resource_limit->GetCategory();
     CASCADE_RESULT(thread->tls_address, owner_process->AllocateThreadLocalStorage());
+    thread_managers[processor_id]->thread_list.push_back(thread);
+    thread_managers[processor_id]->ready_queue.prepare(priority);
+    thread_managers[processor_id]->wakeup_callback_table[thread->thread_id] = thread.get();
 
     // TODO(peachum): move to ScheduleThread() when scheduler is added so selected core is used
     // to initialize the context

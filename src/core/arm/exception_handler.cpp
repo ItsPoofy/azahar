@@ -4,6 +4,7 @@
 
 #include "core/arm/exception_handler.h"
 
+#include <atomic>
 #include <fmt/format.h>
 #include "common/logging/log.h"
 #include "core/arm/arm_interface.h"
@@ -110,6 +111,18 @@ void LogException(System& system, ExceptionType type) {
         return;
     }
 
+    static std::atomic<bool> s_in_handler{false};
+    bool expected = false;
+    if (!s_in_handler.compare_exchange_strong(expected, true)) {
+        return;
+    }
+    struct HandlerGuard {
+        std::atomic<bool>& flag;
+        ~HandlerGuard() {
+            flag.store(false);
+        }
+    } guard{s_in_handler};
+
     auto& core = system.GetRunningCore();
     auto& memory = system.Memory();
 
@@ -130,6 +143,25 @@ void LogException(System& system, ExceptionType type) {
 
     report += fmt::format("Exception Type: {}\n\n", ExceptionTypeToString(type));
 
+    if (type == ExceptionType::PrefetchAbort && system.KernelRunning()) {
+        const auto process = system.Kernel().GetCurrentProcess();
+        if (process) {
+            const auto& manager = process->vm_manager;
+            const auto vma = manager.FindVMA(core.GetPC());
+            const bool mapped = vma != manager.vma_map.end() &&
+                                vma->second.type == Kernel::VMAType::BackingMemory;
+            report += fmt::format("Fetch fault: {} at 0x{:08X}; Luma ForceRWXPages={}\n",
+                                  mapped ? "execute permission" : "unmapped address", core.GetPC(),
+                                  process->force_rwx_pages);
+            if (mapped) {
+                report += fmt::format("Mapping: 0x{:08X}-0x{:08X}, SVC permissions=0x{:X}\n",
+                                      vma->second.base, vma->second.base + vma->second.size,
+                                      static_cast<u32>(vma->second.permissions));
+            }
+            report += '\n';
+        }
+    }
+
     report += "Registers:\n\n";
     report += DumpRegisters(core);
     report += '\n';
@@ -140,6 +172,9 @@ void LogException(System& system, ExceptionType type) {
     LOG_CRITICAL(Core, "\n{}", report);
 
     system.SetStatus(System::ResultStatus::ErrorCoreExceptionRaised, report.c_str());
+    // Stop the active JIT slice at the fault instead of executing more guest instructions
+    // with a fabricated zero read or a discarded write before RunLoop sees the error.
+    core.PrepareReschedule();
 }
 
 } // namespace Core

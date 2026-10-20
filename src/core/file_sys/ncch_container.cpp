@@ -14,6 +14,7 @@
 #include "common/tar_file.h"
 #include "core/core.h"
 #include "core/file_sys/layered_fs.h"
+#include "core/file_sys/luma_layered_fs.h"
 #include "core/file_sys/ncch_container.h"
 #include "core/file_sys/patch.h"
 #include "core/file_sys/seed_db.h"
@@ -662,7 +663,7 @@ Loader::ResultStatus NCCHContainer::ReadRomFS(std::shared_ptr<RomFSReader>& romf
     const auto path =
         fmt::format("{}mods/{:016X}/", FileUtil::GetUserPath(FileUtil::UserPath::LoadDir),
                     GetModId(ncch_header.program_id));
-    if (!is_proto && use_layered_fs &&
+    if (!is_proto && use_layered_fs && !HasLumaLayeredFs(ncch_header.program_id) &&
         (FileUtil::Exists(path + "romfs/") || FileUtil::Exists(path + "romfs_ext/"))) {
 
         romfs_file = std::make_shared<LayeredFS>(std::move(direct_romfs), path + "romfs/",

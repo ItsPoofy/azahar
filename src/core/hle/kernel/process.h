@@ -192,7 +192,7 @@ public:
     /**
      * Applies address space changes and launches the process main thread.
      */
-    void Run(s32 main_thread_priority, u32 stack_size);
+    bool Run(s32 main_thread_priority, u32 stack_size);
 
     /**
      * Called when the process exits by svc
@@ -208,6 +208,7 @@ public:
 
     std::shared_ptr<MemoryRegionInfo> memory_region = nullptr;
     MemoryRegionInfo::IntervalSet holding_memory;
+    MemoryRegionInfo::IntervalSet charged_memory;
     MemoryRegionInfo::IntervalSet holding_tls_memory;
 
     /// The Thread Local Storage area is allocated as processes create threads,
@@ -223,10 +224,15 @@ public:
 
     Result HeapAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermission perms,
                         MemoryState memory_state = MemoryState::Private,
-                        bool skip_range_check = false);
-    Result HeapFree(VAddr target, u32 size, bool skip_range_check = false);
+                        bool skip_range_check = false,
+                        std::shared_ptr<MemoryRegionInfo> allocation_region = nullptr,
+                        bool skip_resource_limit = false);
+    Result HeapFree(VAddr target, u32 size, bool skip_range_check = false,
+                    bool skip_resource_limit = false);
 
-    Result LinearAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermission perms);
+    Result LinearAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermission perms,
+                          std::shared_ptr<MemoryRegionInfo> allocation_region = nullptr,
+                          bool allow_arbitrary_target = false);
     Result LinearFree(VAddr target, u32 size);
 
     ResultVal<VAddr> AllocateThreadLocalStorage();

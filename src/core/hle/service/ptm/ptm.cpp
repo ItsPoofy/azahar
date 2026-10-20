@@ -12,6 +12,7 @@
 #include "core/file_sys/errors.h"
 #include "core/file_sys/file_backend.h"
 #include "core/hle/kernel/shared_page.h"
+#include "core/hle/kernel/event.h"
 #include "core/hle/service/mcu/mcu_rtc.h"
 #include "core/hle/service/ptm/ptm.h"
 #include "core/hle/service/ptm/ptm_gets.h"
@@ -21,12 +22,26 @@
 #include "core/hle/service/ptm/ptm_u.h"
 
 SERIALIZE_EXPORT_IMPL(Service::PTM::Module)
+SERIALIZE_EXPORT_IMPL(Service::PTM::AlarmSessionData)
 SERVICE_CONSTRUCT_IMPL(Service::PTM::Module)
 
 namespace Service::PTM {
 
 /// Values for the default gamecoin.dat file
 static const GameCoin default_game_coin = {0x4F00, 42, 0, 0, 0, 2014, 12, 29};
+
+void Module::Interface::RegisterAlarmClient(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    const auto object = rp.PopGenericObject();
+    const auto event = Kernel::DynamicObjectCast<Kernel::Event>(object);
+    IPC::RequestBuilder rb = rp.MakeBuilder(1, 0);
+    if (object && !event) {
+        rb.Push(Kernel::ResultInvalidHandle);
+        return;
+    }
+    GetSessionData(ctx.Session())->event = event;
+    rb.Push(ResultSuccess);
+}
 
 void Module::Interface::GetAdapterState(Kernel::HLERequestContext& ctx) {
     IPC::RequestParser rp(ctx);

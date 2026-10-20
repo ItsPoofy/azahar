@@ -395,7 +395,9 @@ ResultStatus AppLoader_ELF::Load(std::shared_ptr<Kernel::Process>& process) {
 
     process->resource_limit->ApplyAppMaxCPUSetting(process, 1, 89);
 
-    process->Run(48, Kernel::DEFAULT_STACK_SIZE);
+    if (!process->Run(48, Kernel::DEFAULT_STACK_SIZE)) {
+        return ResultStatus::ErrorMemoryAllocationFailed;
+    }
 
     is_loaded = true;
     return ResultStatus::Success;

@@ -53,10 +53,12 @@ void Process::serialize(Archive& ar, const unsigned int) {
     ar & resource_limit;
     ar & svc_access_mask;
     ar & handle_table_size;
+    handle_table.SetMaxCount(handle_table_size);
     ar&(boost::container::vector<AddressMapping, boost::container::dtl::static_storage_allocator<
                                                      AddressMapping, 8, 0, true>>&)address_mappings;
     ar & flags.raw;
     ar & no_thread_restrictions;
+    ar & force_rwx_pages;
     ar & kernel_version;
     ar & ideal_processor;
     ar & status;
@@ -66,6 +68,7 @@ void Process::serialize(Archive& ar, const unsigned int) {
     ar & memory_used;
     ar & memory_region;
     ar & holding_memory;
+    ar & charged_memory;
     ar & holding_tls_memory;
     ar & tls_slots;
 }
@@ -157,6 +160,7 @@ void Process::ParseKernelCaps(const u32* kernel_caps, std::size_t len) {
         } else if ((type & 0xFF0) == 0xFE0) { // 0x00FF
             // Handle table size
             handle_table_size = descriptor & 0x3FF;
+            handle_table.SetMaxCount(handle_table_size);
         } else if ((type & 0xFF8) == 0xFF0) { // 0x007F
             // Misc. flags
             flags.raw = descriptor & 0xFFFF;
@@ -221,32 +225,43 @@ void Process::Set3dsxKernelCaps() {
     kernel_version = 0x23a;
 }
 
-void Process::Run(s32 main_thread_priority, u32 stack_size) {
+bool Process::Run(s32 main_thread_priority, u32 stack_size) {
     memory_region = kernel.GetMemoryRegion(flags.memory_region);
 
     // Ensure we can reserve a thread. Real kernel returns 0xC860180C if this fails.
     if (!resource_limit->Reserve(ResourceLimitType::Thread, 1)) {
-        return;
+        return false;
     }
 
     VAddr out_addr{};
 
     auto MapSegment = [&](CodeSet::Segment& segment, VMAPermission permissions,
                           MemoryState memory_state) {
-        HeapAllocate(std::addressof(out_addr), segment.addr, segment.size, permissions,
-                     memory_state, true);
+        if (HeapAllocate(std::addressof(out_addr), segment.addr, segment.size, permissions,
+                         memory_state, true)
+                .IsError()) {
+            return false;
+        }
         kernel.memory.WriteBlock(*this, segment.addr, codeset->memory.data() + segment.offset,
                                  segment.size);
+        return true;
     };
 
-    // Map CodeSet segments
-    MapSegment(codeset->CodeSegment(), VMAPermission::ReadExecute, MemoryState::Code);
-    MapSegment(codeset->RODataSegment(), VMAPermission::Read, MemoryState::Code);
-    MapSegment(codeset->DataSegment(), VMAPermission::ReadWrite, MemoryState::Private);
-
-    // Allocate and map stack
-    HeapAllocate(std::addressof(out_addr), Memory::HEAP_VADDR_END - stack_size, stack_size,
-                 VMAPermission::ReadWrite, MemoryState::Locked, true);
+    // A failed segment or stack allocation must abort process startup. Otherwise the loader
+    // would report success and execute a partially mapped image.
+    const bool mapped =
+        MapSegment(codeset->CodeSegment(), VMAPermission::ReadExecute, MemoryState::Code) &&
+        MapSegment(codeset->RODataSegment(), VMAPermission::Read, MemoryState::Code) &&
+        MapSegment(codeset->DataSegment(), VMAPermission::ReadWrite, MemoryState::Private) &&
+        HeapAllocate(std::addressof(out_addr), Memory::HEAP_VADDR_END - stack_size, stack_size,
+                     VMAPermission::ReadWrite, MemoryState::Locked, true)
+            .IsSuccess();
+    if (!mapped) {
+        FreeAllMemory();
+        vm_manager.Reset();
+        resource_limit->Release(ResourceLimitType::Thread, 1);
+        return false;
+    }
 
     // Map special address mappings
     kernel.MapSharedPages(vm_manager);
@@ -276,6 +291,7 @@ void Process::Run(s32 main_thread_priority, u32 stack_size) {
 #endif
         Core::System::GetInstance().ClearDebugNextProcessFlag();
     }
+    return true;
 }
 
 void Process::Exit() {
@@ -304,11 +320,10 @@ VAddr Process::GetLinearHeapLimit() const {
 }
 
 Result Process::HeapAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermission perms,
-                             MemoryState memory_state, bool skip_range_check) {
+                             MemoryState memory_state, bool skip_range_check,
+                             std::shared_ptr<MemoryRegionInfo> allocation_region,
+                             bool skip_resource_limit) {
     LOG_DEBUG(Kernel, "Allocate heap target={:08X}, size={:08X}", target, size);
-    if (force_rwx_pages) {
-        perms = VMAPermission::ReadWriteExecute;
-    }
     if (target < Memory::HEAP_VADDR || target + size > Memory::HEAP_VADDR_END ||
         target + size < target) {
         if (!skip_range_check) {
@@ -324,9 +339,30 @@ Result Process::HeapAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermiss
             return ResultInvalidAddressState;
         }
     }
-    auto allocated_fcram = memory_region->HeapAllocate(size);
+    if (!skip_resource_limit && !resource_limit->Reserve(ResourceLimitType::Commit, size)) {
+        LOG_ERROR(Kernel, "Resource limit exceeded for commit (size=0x{:08X})", size);
+        return ResultOutOfHeapMemory;
+    }
+    const bool has_explicit_region = static_cast<bool>(allocation_region);
+    auto target_region = allocation_region ? std::move(allocation_region) : memory_region;
+    auto allocated_fcram = target_region->HeapAllocate(size);
+    // The loader also skips the virtual-address range check. Only ControlMemoryUnsafe may
+    // allocate outside the process's FCRAM region, and an explicit region must be honored.
+    if (allocated_fcram.empty() && skip_resource_limit && !has_explicit_region) {
+        for (const auto region : {MemoryRegion::SYSTEM, MemoryRegion::BASE}) {
+            auto candidate = kernel.GetMemoryRegion(region);
+            allocated_fcram = candidate->HeapAllocate(size);
+            if (!allocated_fcram.empty()) {
+                target_region = std::move(candidate);
+                break;
+            }
+        }
+    }
     if (allocated_fcram.empty()) {
         LOG_ERROR(Kernel, "Not enough space");
+        if (!skip_resource_limit) {
+            resource_limit->Release(ResourceLimitType::Commit, size);
+        }
         return ResultOutOfHeapMemory;
     }
 
@@ -347,14 +383,15 @@ Result Process::HeapAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermiss
     }
 
     holding_memory += allocated_fcram;
+    if (!skip_resource_limit) charged_memory += allocated_fcram;
     memory_used += size;
-    resource_limit->Reserve(ResourceLimitType::Commit, size);
 
     *out_addr = target;
     return ResultSuccess;
 }
 
-Result Process::HeapFree(VAddr target, u32 size, bool skip_range_check) {
+Result Process::HeapFree(VAddr target, u32 size, bool skip_range_check,
+                         bool skip_resource_limit) {
     LOG_DEBUG(Kernel, "Free heap target={:08X}, size={:08X}", target, size);
     if (target < Memory::HEAP_VADDR || target + size > Memory::HEAP_VADDR_END ||
         target + size < target) {
@@ -370,37 +407,75 @@ Result Process::HeapFree(VAddr target, u32 size, bool skip_range_check) {
     CASCADE_RESULT(auto backing_blocks, vm_manager.GetBackingBlocksForRange(target, size));
     for (const auto& [backing_memory, block_size] : backing_blocks) {
         const auto backing_offset = kernel.memory.GetFCRAMOffset(backing_memory.GetPtr());
-        memory_region->Free(backing_offset, block_size);
+        std::shared_ptr<MemoryRegionInfo> allocated_region;
+        for (const auto region : {MemoryRegion::APPLICATION, MemoryRegion::SYSTEM,
+                                  MemoryRegion::BASE}) {
+            auto candidate = kernel.GetMemoryRegion(region);
+            if (backing_offset >= candidate->base &&
+                backing_offset + block_size <= candidate->base + candidate->size) {
+                allocated_region = std::move(candidate);
+                break;
+            }
+        }
+        R_UNLESS(allocated_region, ResultInvalidAddress);
+        allocated_region->Free(backing_offset, block_size);
         holding_memory -= MemoryRegionInfo::Interval(backing_offset, backing_offset + block_size);
+        const auto released = charged_memory & MemoryRegionInfo::Interval(backing_offset, backing_offset + block_size);
+        for (const auto& interval : released)
+            resource_limit->Release(ResourceLimitType::Commit, interval.upper() - interval.lower());
+        charged_memory -= MemoryRegionInfo::Interval(backing_offset, backing_offset + block_size);
     }
 
     Result result = vm_manager.UnmapRange(target, size);
     ASSERT(result.IsSuccess());
 
     memory_used -= size;
-    resource_limit->Release(ResourceLimitType::Commit, size);
 
     return ResultSuccess;
 }
 
-Result Process::LinearAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermission perms) {
+Result Process::LinearAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermission perms,
+                               std::shared_ptr<MemoryRegionInfo> allocation_region,
+                               bool allow_arbitrary_target) {
     LOG_DEBUG(Kernel, "Allocate linear heap target={:08X}, size={:08X}", target, size);
-    if (force_rwx_pages) {
-        perms = VMAPermission::ReadWriteExecute;
+    const bool skip_resource_limit = allow_arbitrary_target || allocation_region;
+    if (!skip_resource_limit && !resource_limit->Reserve(ResourceLimitType::Commit, size)) {
+        LOG_ERROR(Kernel, "Resource limit exceeded for commit (size=0x{:08X})", size);
+        return ResultOutOfHeapMemory;
     }
+    const bool has_explicit_region = static_cast<bool>(allocation_region);
+    auto target_region = allocation_region ? std::move(allocation_region) : memory_region;
     u32 physical_offset;
-    if (target == 0) {
-        auto offset = memory_region->LinearAllocate(size);
+    if (target == 0 || allow_arbitrary_target) {
+        auto offset = target_region->LinearAllocate(size);
+        if (!offset && allow_arbitrary_target && !has_explicit_region) {
+            for (const auto region : {MemoryRegion::SYSTEM, MemoryRegion::BASE}) {
+                auto candidate = kernel.GetMemoryRegion(region);
+                offset = candidate->LinearAllocate(size);
+                if (offset) {
+                    target_region = std::move(candidate);
+                    break;
+                }
+            }
+        }
         if (!offset) {
             LOG_ERROR(Kernel, "Not enough space");
+            if (!skip_resource_limit) {
+                resource_limit->Release(ResourceLimitType::Commit, size);
+            }
             return ResultOutOfHeapMemory;
         }
         physical_offset = *offset;
-        target = physical_offset + GetLinearHeapAreaAddress();
+        if (!allow_arbitrary_target) {
+            target = physical_offset + GetLinearHeapAreaAddress();
+        }
     } else {
         if (target < GetLinearHeapBase() || target + size > GetLinearHeapLimit() ||
             target + size < target) {
             LOG_ERROR(Kernel, "Invalid linear heap address");
+            if (!skip_resource_limit) {
+                resource_limit->Release(ResourceLimitType::Commit, size);
+            }
             return ResultInvalidAddress;
         }
 
@@ -412,8 +487,11 @@ Result Process::LinearAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermi
         // the address), so this not important.
 
         physical_offset = target - GetLinearHeapAreaAddress(); // relative to FCRAM
-        if (!memory_region->LinearAllocate(physical_offset, size)) {
+        if (!target_region->LinearAllocate(physical_offset, size)) {
             LOG_ERROR(Kernel, "Trying to allocate already allocated memory");
+            if (!skip_resource_limit) {
+                resource_limit->Release(ResourceLimitType::Commit, size);
+            }
             return ResultInvalidAddressState;
         }
     }
@@ -422,12 +500,19 @@ Result Process::LinearAllocate(VAddr* out_addr, VAddr target, u32 size, VMAPermi
 
     std::fill(backing_memory.GetPtr(), backing_memory.GetPtr() + size, 0);
     auto vma = vm_manager.MapBackingMemory(target, backing_memory, size, MemoryState::Continuous);
-    ASSERT(vma.Succeeded());
+    if (vma.Failed()) {
+        target_region->Free(physical_offset, size);
+        if (!skip_resource_limit) {
+            resource_limit->Release(ResourceLimitType::Commit, size);
+        }
+        return vma.Code();
+    }
     vm_manager.Reprotect(vma.Unwrap(), perms);
 
     holding_memory += MemoryRegionInfo::Interval(physical_offset, physical_offset + size);
+    if (!skip_resource_limit)
+        charged_memory += MemoryRegionInfo::Interval(physical_offset, physical_offset + size);
     memory_used += size;
-    resource_limit->Reserve(ResourceLimitType::Commit, size);
 
     LOG_DEBUG(Kernel, "Allocated at target={:08X}", target);
     *out_addr = target;
@@ -446,11 +531,24 @@ Result Process::LinearFree(VAddr target, u32 size) {
     R_TRY(vm_manager.UnmapRange(target, size));
 
     u32 physical_offset = target - GetLinearHeapAreaAddress(); // relative to FCRAM
-    memory_region->Free(physical_offset, size);
+    std::shared_ptr<MemoryRegionInfo> allocated_region;
+    for (const auto region : {MemoryRegion::APPLICATION, MemoryRegion::SYSTEM, MemoryRegion::BASE}) {
+        auto candidate = kernel.GetMemoryRegion(region);
+        if (physical_offset >= candidate->base &&
+            physical_offset + size <= candidate->base + candidate->size) {
+            allocated_region = std::move(candidate);
+            break;
+        }
+    }
+    R_UNLESS(allocated_region, ResultInvalidAddress);
+    allocated_region->Free(physical_offset, size);
 
     holding_memory -= MemoryRegionInfo::Interval(physical_offset, physical_offset + size);
     memory_used -= size;
-    resource_limit->Release(ResourceLimitType::Commit, size);
+    const auto released = charged_memory & MemoryRegionInfo::Interval(physical_offset, physical_offset + size);
+    for (const auto& interval : released)
+        resource_limit->Release(ResourceLimitType::Commit, interval.upper() - interval.lower());
+    charged_memory -= MemoryRegionInfo::Interval(physical_offset, physical_offset + size);
 
     return ResultSuccess;
 }
@@ -528,9 +626,6 @@ ResultVal<VAddr> Process::AllocateThreadLocalStorage() {
 Result Process::Map(VAddr target, VAddr source, u32 size, VMAPermission perms, bool privileged) {
     LOG_DEBUG(Kernel, "Map memory target={:08X}, source={:08X}, size={:08X}, perms={:08X}", target,
               source, size, perms);
-    if (force_rwx_pages) {
-        perms = VMAPermission::ReadWriteExecute;
-    }
     if (!privileged && (source < Memory::HEAP_VADDR || source + size > Memory::HEAP_VADDR_END ||
                         source + size < source)) {
         LOG_ERROR(Kernel, "Invalid source address");
@@ -670,11 +765,21 @@ void Process::FreeAllMemory() {
         LOG_DEBUG(Kernel, "Freeing process memory region 0x{:08X} - 0x{:08X}", entry.lower(),
                   entry.upper());
         auto size = entry.upper() - entry.lower();
-        memory_region->Free(entry.lower(), size);
+        for (const auto region : {MemoryRegion::APPLICATION, MemoryRegion::SYSTEM,
+                                  MemoryRegion::BASE}) {
+            auto candidate = kernel.GetMemoryRegion(region);
+            const u32 lower = std::max(entry.lower(), candidate->base);
+            const u32 upper = std::min(entry.upper(), candidate->base + candidate->size);
+            if (lower < upper) {
+                candidate->Free(lower, upper - lower);
+            }
+        }
         memory_used -= size;
-        resource_limit->Release(ResourceLimitType::Commit, size);
     }
     holding_memory.clear();
+    for (const auto& interval : charged_memory)
+        resource_limit->Release(ResourceLimitType::Commit, interval.upper() - interval.lower());
+    charged_memory.clear();
 
     // Free any TLS memory allocations.
     auto base_memory_region = kernel.GetMemoryRegion(MemoryRegion::BASE);

@@ -35,6 +35,9 @@ public:
     u64 GetFreeBytes() const override;
 
 protected:
+    virtual std::size_t GetMaxPathLength() const {
+        return 253;
+    }
     std::string mount_point;
     bool allow_zero_size_create;
     SaveDataArchive() = default;

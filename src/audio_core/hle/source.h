@@ -206,6 +206,8 @@ private:
     void ParseConfig(SourceConfiguration::Configuration& config, const s16_le (&adpcm_coeffs)[16]);
     /// INTERNAL: Generate the current audio output for this frame based on our internal state.
     void GenerateFrame();
+    /// Make samples available, reading live ADPCM blocks before advancing the buffer queue.
+    bool EnsureBufferSamples();
     /// INTERNAL: Dequeues a buffer and does preprocessing on it (decoding, resampling). Puts it
     /// into current_buffer.
     bool DequeueBuffer();

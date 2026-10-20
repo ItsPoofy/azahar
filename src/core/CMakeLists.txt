@@ -79,6 +79,8 @@ add_library(citra_core STATIC EXCLUDE_FROM_ALL
     file_sys/ivfc_archive.h
     file_sys/layered_fs.cpp
     file_sys/layered_fs.h
+    file_sys/luma_layered_fs.cpp
+    file_sys/luma_layered_fs.h
     file_sys/ncch_container.cpp
     file_sys/ncch_container.h
     file_sys/otp.cpp

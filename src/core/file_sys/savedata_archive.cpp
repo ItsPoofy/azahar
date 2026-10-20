@@ -40,7 +40,7 @@ ResultVal<std::unique_ptr<FileBackend>> SaveDataArchive::OpenFile(const Path& pa
                                                                   u32 attributes) {
     LOG_DEBUG(Service_FS, "called path={} mode={:01X}", path.DebugStr(), mode.hex);
 
-    const PathParser path_parser(path);
+    const PathParser path_parser(path, 16, GetMaxPathLength());
 
     if (!path_parser.IsValid()) {
         LOG_ERROR(Service_FS, "Invalid path {}", path.DebugStr());
@@ -95,7 +95,7 @@ ResultVal<std::unique_ptr<FileBackend>> SaveDataArchive::OpenFile(const Path& pa
 }
 
 Result SaveDataArchive::DeleteFile(const Path& path) const {
-    const PathParser path_parser(path);
+    const PathParser path_parser(path, 16, GetMaxPathLength());
 
     if (!path_parser.IsValid()) {
         LOG_ERROR(Service_FS, "Invalid path {}", path.DebugStr());
@@ -129,7 +129,7 @@ Result SaveDataArchive::DeleteFile(const Path& path) const {
 }
 
 Result SaveDataArchive::RenameFile(const Path& src_path, const Path& dest_path) const {
-    const PathParser path_parser_src(src_path);
+    const PathParser path_parser_src(src_path, 16, GetMaxPathLength());
 
     // TODO: Verify these return codes with HW
     if (!path_parser_src.IsValid()) {
@@ -137,7 +137,7 @@ Result SaveDataArchive::RenameFile(const Path& src_path, const Path& dest_path) 
         return ResultInvalidPath;
     }
 
-    const PathParser path_parser_dest(dest_path);
+    const PathParser path_parser_dest(dest_path, 16, GetMaxPathLength());
 
     if (!path_parser_dest.IsValid()) {
         LOG_ERROR(Service_FS, "Invalid dest path {}", dest_path.DebugStr());
@@ -158,8 +158,9 @@ Result SaveDataArchive::RenameFile(const Path& src_path, const Path& dest_path) 
 }
 
 template <typename T>
-static Result DeleteDirectoryHelper(const Path& path, const std::string& mount_point, T deleter) {
-    const PathParser path_parser(path);
+static Result DeleteDirectoryHelper(const Path& path, const std::string& mount_point,
+                                    std::size_t max_path_length, T deleter) {
+    const PathParser path_parser(path, 16, max_path_length);
 
     if (!path_parser.IsValid()) {
         LOG_ERROR(Service_FS, "Invalid path {}", path.DebugStr());
@@ -196,16 +197,17 @@ static Result DeleteDirectoryHelper(const Path& path, const std::string& mount_p
 }
 
 Result SaveDataArchive::DeleteDirectory(const Path& path) const {
-    return DeleteDirectoryHelper(path, mount_point, FileUtil::DeleteDir);
+    return DeleteDirectoryHelper(path, mount_point, GetMaxPathLength(), FileUtil::DeleteDir);
 }
 
 Result SaveDataArchive::DeleteDirectoryRecursively(const Path& path) const {
     return DeleteDirectoryHelper(
-        path, mount_point, [](const std::string& p) { return FileUtil::DeleteDirRecursively(p); });
+        path, mount_point, GetMaxPathLength(),
+        [](const std::string& p) { return FileUtil::DeleteDirRecursively(p); });
 }
 
 Result SaveDataArchive::CreateFile(const FileSys::Path& path, u64 size, u32 attributes) const {
-    const PathParser path_parser(path);
+    const PathParser path_parser(path, 16, GetMaxPathLength());
 
     if (!path_parser.IsValid()) {
         LOG_ERROR(Service_FS, "Invalid path {}", path.DebugStr());
@@ -255,7 +257,7 @@ Result SaveDataArchive::CreateFile(const FileSys::Path& path, u64 size, u32 attr
 }
 
 Result SaveDataArchive::CreateDirectory(const Path& path, u32 attributes) const {
-    const PathParser path_parser(path);
+    const PathParser path_parser(path, 16, GetMaxPathLength());
 
     if (!path_parser.IsValid()) {
         LOG_ERROR(Service_FS, "Invalid path {}", path.DebugStr());
@@ -292,7 +294,7 @@ Result SaveDataArchive::CreateDirectory(const Path& path, u32 attributes) const 
 }
 
 Result SaveDataArchive::RenameDirectory(const Path& src_path, const Path& dest_path) const {
-    const PathParser path_parser_src(src_path);
+    const PathParser path_parser_src(src_path, 16, GetMaxPathLength());
 
     // TODO: Verify these return codes with HW
     if (!path_parser_src.IsValid()) {
@@ -300,7 +302,7 @@ Result SaveDataArchive::RenameDirectory(const Path& src_path, const Path& dest_p
         return ResultInvalidPath;
     }
 
-    const PathParser path_parser_dest(dest_path);
+    const PathParser path_parser_dest(dest_path, 16, GetMaxPathLength());
 
     if (!path_parser_dest.IsValid()) {
         LOG_ERROR(Service_FS, "Invalid dest path {}", dest_path.DebugStr());
@@ -321,7 +323,7 @@ Result SaveDataArchive::RenameDirectory(const Path& src_path, const Path& dest_p
 }
 
 ResultVal<std::unique_ptr<DirectoryBackend>> SaveDataArchive::OpenDirectory(const Path& path) {
-    const PathParser path_parser(path);
+    const PathParser path_parser(path, 16, GetMaxPathLength());
 
     if (!path_parser.IsValid()) {
         LOG_ERROR(Service_FS, "Invalid path {}", path.DebugStr());

@@ -10,7 +10,8 @@
 
 namespace FileSys {
 
-PathParser::PathParser(const Path& path) {
+PathParser::PathParser(const Path& path, std::size_t max_component_length,
+                       std::size_t max_path_length) {
     if (path.GetType() != LowPathType::Char && path.GetType() != LowPathType::Wchar) {
         is_valid = false;
         return;
@@ -20,6 +21,18 @@ PathParser::PathParser(const Path& path) {
     if (path_string.size() == 0 || path_string[0] != '/') {
         is_valid = false;
         return;
+    }
+
+    const auto wide_path = path.AsU16Str();
+    if (wide_path.size() > max_path_length) {
+        return;
+    }
+    std::size_t component_length = 0;
+    for (char16_t character : wide_path) {
+        component_length = character == u'/' ? 0 : component_length + 1;
+        if (component_length > max_component_length) {
+            return;
+        }
     }
 
     // Filter out invalid characters for the host system.

@@ -14,7 +14,7 @@ PTM_Gets::PTM_Gets(std::shared_ptr<Module> ptm)
     static const FunctionInfo functions[] = {
         // ptm:u common commands
         // clang-format off
-        {0x0001, nullptr, "RegisterAlarmClient"},
+        {0x0001, &PTM_Gets::RegisterAlarmClient, "RegisterAlarmClient"},
         {0x0002, nullptr, "SetRtcAlarm"},
         {0x0003, nullptr, "GetRtcAlarm"},
         {0x0004, nullptr, "CancelRtcAlarm"},
